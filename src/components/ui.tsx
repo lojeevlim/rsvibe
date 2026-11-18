@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore, type ComponentProps } from "react";
 import { createPortal } from "react-dom";
-import { AlertDialog as BaseAlertDialog } from "lojee-ui";
+import { AlertDialog as BaseAlertDialog, Modal as BaseModal } from "lojee-ui";
 
 // Client barrel: lojee-ui ships without "use client", so server components import it through here.
 export {
@@ -26,7 +26,6 @@ export {
   Input,
   Label,
   Map,
-  Modal,
   Navbar,
   NavbarItem,
   MapMarker,
@@ -58,4 +57,10 @@ const noop = () => () => {};
 export function AlertDialog(props: ComponentProps<typeof BaseAlertDialog>) {
   const client = useSyncExternalStore(noop, () => true, () => false);
   return client ? createPortal(<BaseAlertDialog {...props} />, document.body) : null;
+}
+
+/** lojee-ui's Modal, drawn straight into <body> for the same reason: its backdrop then covers the whole screen, not just a transformed or blurred parent */
+export function Modal(props: ComponentProps<typeof BaseModal>) {
+  const client = useSyncExternalStore(noop, () => true, () => false);
+  return client ? createPortal(<BaseModal {...props} />, document.body) : null;
 }
