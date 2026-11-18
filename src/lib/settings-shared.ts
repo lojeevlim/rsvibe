@@ -4,12 +4,36 @@ export const MAX_IMAGES = 12;
 export const MAX_DECORATIONS = 20;
 export const MAX_SECTIONS = 30;
 export const MAX_BLOCKS = 60;
+/** how a sticker first appears (once its section comes into view), after its delay */
+export const ENTER_EFFECTS = ["none", "fade", "bounce", "blur", "zoom", "pop", "slide-up", "slide-down", "slide-left", "slide-right", "drop", "spin", "flip", "swing"] as const;
+export const ENTER_LABELS: Record<(typeof ENTER_EFFECTS)[number], string> = {
+  none: "None — always there",
+  fade: "Fade in",
+  bounce: "Bounce in",
+  blur: "Blur in",
+  zoom: "Zoom in",
+  pop: "Pop",
+  "slide-up": "Slide up",
+  "slide-down": "Slide down",
+  "slide-left": "Slide in from the right",
+  "slide-right": "Slide in from the left",
+  drop: "Drop in",
+  spin: "Spin in",
+  flip: "Flip in",
+  swing: "Swing in",
+};
 export const EFFECTS = ["none", "float", "wiggle", "pulse", "spin", "bounce", "swing", "shake", "tada"] as const;
 export const SHAPES = ["original", "rounded", "circle", "square", "heart", "star", "hexagon"] as const;
 export const KINDS = ["text", "graffiti", "emoji", "art", "image"] as const;
-export const BLOCK_TYPES = ["badge", "heading", "text", "script", "button", "image", "gallery", "emoji", "card", "step", "countdown", "rsvp", "divider", "spacer", "map", "illustration"] as const;
+/** looks for a group of elements (the box drawn around them) */
+/** crowns that sit on top of a group of elements */
+export const GROUP_CROWNS = ["none", "gold", "banner", "royal", "tiara", "flowers", "party"] as const;
+export type GroupCrown = (typeof GROUP_CROWNS)[number];
+export const GROUP_STYLES = ["none", "card", "soft", "outline", "shadow", "accent", "glass", "gradient", "wavy", "ticket", "blob", "goldframe", "cartouche", "flourish"] as const;
+export type GroupStyle = (typeof GROUP_STYLES)[number];
+export const BLOCK_TYPES = ["badge", "heading", "text", "script", "button", "image", "gallery", "emoji", "card", "step", "countdown", "rsvp", "divider", "spacer", "map", "illustration", "ribbon"] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
-export const SECTION_EFFECTS = ["none", "balloons", "graffiti", "confetti", "hearts", "stars", "snow", "rain", "bubbles", "fireflies", "fireworks"] as const;
+export const SECTION_EFFECTS = ["none", "balloons", "graffiti", "confetti", "popper", "hearts", "stars", "snow", "rain", "bubbles", "fireflies", "fireworks"] as const;
 export const EVENT_TYPES = ["general", "birthday", "anniversary", "wedding", "christmas", "new-year", "baby-shower", "graduation", "housewarming", "corporate"] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 /** Illustrated edge designs for a section's top / bottom / left / right (the artwork lives in components/BorderArt.tsx) */
@@ -23,11 +47,16 @@ export const PAGE_MODES = ["flow", "screens"] as const;
 export const SCREEN_TRANSITIONS = ["rise", "zoom", "slide", "fade"] as const;
 /** the shapes the opening card's envelope can take, and the fonts for its writing */
 export const ENVELOPE_SHAPES = ["classic", "sharp", "soft", "arch"] as const;
-export const ENVELOPE_FONTS = ["serif", "script", "sans", "rounded"] as const;
+/** the opening card's writing: the same pairings as the page's font styles */
+export const LETTER_PATTERNS = ["plain", "lined", "dots", "grid", "stripes", "hearts", "stars"] as const;
+export const LETTER_BORDERS = ["single", "double", "dashed", "gold", "none"] as const;
+export const ENVELOPE_FONTS = ["playful", "modern", "elegant", "bold"] as const;
+/** cards saved before the card used the page's font styles */
+const OLD_ENVELOPE_FONTS: Record<string, (typeof ENVELOPE_FONTS)[number]> = { serif: "elegant", script: "elegant", sans: "modern", rounded: "playful" };
 export const DEFAULT_PAGE = {
   mode: "flow",
   transition: "rise",
-  intro: { on: false, title: "You have a letter from:", sender: "{name}", hint: "Tap the envelope to open", seal: "heart", shape: "classic", paper: "", sealColor: "", bgFrom: "", bgTo: "", textColor: "", font: "serif", letter: "" },
+  intro: { on: false, title: "You have a letter from:", sender: "{name}", hint: "Tap the envelope to open", seal: "heart", shape: "classic", paper: "", sealColor: "", bgFrom: "", bgTo: "", textColor: "", font: "elegant", letter: "", letterPaper: "", letterPattern: "plain", letterBorder: "single", letterSize: "md" },
 } as const;
 /** frames for pictures (image and gallery blocks) */
 export const FRAMES = ["none", "checker", "film", "polaroid", "double"] as const;
@@ -134,6 +163,7 @@ export const EFFECT_LABELS: [(typeof SECTION_EFFECTS)[number], string][] = [
   ["snow", "Snow falling"],
   ["rain", "Rain"],
   ["confetti", "Confetti falling"],
+  ["popper", "Confetti popping from the sides"],
   ["graffiti", "Graffiti falling & fading"],
 ];
 
@@ -141,6 +171,8 @@ export const EFFECT_LABELS: [(typeof SECTION_EFFECTS)[number], string][] = [
 const decoLook = z.object({
   kind: z.enum(KINDS),
   content: text(120),
+  /** picture stickers: the upload as it was before its background was removed */
+  original: upload.optional(),
   size: z.number().min(4).max(5000),
   rotate: z.number().min(-180).max(180),
   color: hex,
@@ -153,6 +185,9 @@ const decoLook = z.object({
 });
 export type DecoLook = z.infer<typeof decoLook>;
 
+/** illustrated border art on each side (sections, and card boxes) */
+const borderArt = z.object({ top: z.enum(BORDER_IDS), bottom: z.enum(BORDER_IDS), left: z.enum(BORDER_IDS), right: z.enum(BORDER_IDS), size: z.enum(["sm", "md", "lg", "xl"]), curve: z.number().min(-100).max(100).default(0), wave: z.number().min(0).max(100).default(0) });
+
 const block = z
   .object({
     id: text(40),
@@ -160,6 +195,26 @@ const block = z
     text: text(400).default(""),
     text2: text(400).default(""),
     text3: text(400).default(""),
+    /** heading / text / handwriting: bend the line along an arc (-100 smile … 0 straight … 100 rainbow) */
+    curve: z.number().min(-100).max(100).optional(),
+    /** image: the uploaded picture as it was before its background was removed (so it can be brought back) */
+    original: upload.optional(),
+    /** image: how wide it is, in px (unset: from its old size preset). It may grow past the text column, up to the section's width */
+    imgW: z.number().min(60).max(2400).optional(),
+    /** ribbon banner looks (all optional: an unset one keeps the style's own look) */
+    ribbon: z
+      .object({
+        textColor: z.union([hex, z.literal("")]),
+        font: z.enum(["bold", "display", "serif", "script"]),
+        arch: z.number().min(0).max(100),
+        /** how long the band is, % of its normal length */
+        width: z.number().min(50).max(180),
+        tails: z.enum(["v", "straight", "none"]),
+        shine: z.boolean(),
+        shadow: z.boolean(),
+      })
+      .partial()
+      .optional(),
     url: z.string().trim().max(500).default(""),
     icon: text(16).default(""),
     size: sizes.default("md"),
@@ -175,11 +230,47 @@ const block = z
     back: text(200).default(""),
     /** RSVP form: text overrides by key (see RSVP_FIELDS); a missing or empty key uses the default */
     labels: z.record(z.string(), text(300)).default({}),
+    /** info cards: a colour shown as a row of circles under the text, with the lighter and darker shades worked out from it. "" = no circles */
+    color: z.union([hex, z.literal("")]).default(""),
     /** "illustration" blocks only: the picture / emoji / text and how it looks */
     deco: decoLook.nullable().default(null),
     /** blocks that share a group id (and sit next to each other) are laid out together, side by side ("row") or stacked ("col"); "" = not grouped */
     group: text(20).default(""),
     groupDir: z.enum(["row", "col"]).default("col"),
+    /** the look of the box around the group (kept on every member, like groupDir) */
+    groupStyle: z.enum(GROUP_STYLES).default("none"),
+    /** a crown on top of the group, and a colour the box is made in ("" = the theme's colours) */
+    groupCrown: z.enum(GROUP_CROWNS).default("none"),
+    groupColor: z.union([hex, z.literal("")]).default(""),
+    /** a group / card box's own look and place (kept the same on every member): moved by (x % of the section's width, y px), corner radius, border */
+    groupX: z.number().min(-300).max(300).optional(), // % of the text column: past ±100 reaches the section's sides
+    groupY: z.number().min(-2000).max(4000).optional(),
+    groupRadius: z.number().min(0).max(120).optional(),
+    /** a card box that floats: placed anywhere in its section (x % from the left, y px from the top) without moving anything around it */
+    groupFloat: z.boolean().optional(),
+    /** the same illustrated border art a section can have, drawn around the box */
+    groupArt: borderArt.optional(),
+    /** the phone layout: this element's own place / size on phones (unset = as on large screens), and which screens show it */
+    m: z
+      .object({
+        x: z.number().min(-100).max(100),
+        y: z.number().min(-2000).max(4000),
+        /** % of its large-screen size */
+        zoom: z.number().min(25).max(300),
+        groupX: z.number().min(-300).max(300),
+        groupY: z.number().min(-2000).max(4000),
+        groupW: z.number().min(10).max(100),
+        groupH: z.number().min(0).max(2000),
+      })
+      .partial()
+      .optional(),
+    showOn: z.enum(["all", "desktop", "phone"]).optional(),
+    /** size: width in % of the section's content column, height as a minimum in px (taller content still fits) */
+    groupW: z.number().min(10).max(100).optional(),
+    groupH: z.number().min(0).max(2000).optional(),
+    groupBorderW: z.number().min(0).max(16).optional(),
+    groupBorderColor: z.union([hex, z.literal("")]).optional(),
+    groupBorderStyle: z.enum(["solid", "dashed", "dotted", "double"]).optional(),
     /** true: when moved down or up it floats over the other elements (they stay put, and it can overlap them); false: it pushes the elements below it */
     overlap: z.boolean().default(false),
     /** free position: sideways offset in % of the section width, downward offset in px (0,0 = the normal flow) */
@@ -210,13 +301,19 @@ const section = z.object({
   panel: z.enum(PANELS).default("none"),
   gradient: z.object({ on: z.boolean(), from: hex, to: hex, angle: z.number().min(0).max(360) }).default(DEFAULT_GRADIENT),
   /** illustrated border on each side, and how big the artwork is */
-  border: z.object({ top: z.enum(BORDER_IDS), bottom: z.enum(BORDER_IDS), left: z.enum(BORDER_IDS), right: z.enum(BORDER_IDS), size: z.enum(["sm", "md", "lg", "xl"]), curve: z.number().min(-100).max(100).default(0), wave: z.number().min(0).max(100).default(0) }).default(DEFAULT_BORDER),
+  border: borderArt.default(DEFAULT_BORDER),
   effect: z.enum(SECTION_EFFECTS).default("none"),
   card: z.boolean(),
   wide: z.boolean(),
   pad: z.enum(["sm", "md", "lg"]),
   /** extra empty space (px) added below the section's content, making it taller */
-  grow: z.number().min(0).max(1000).default(0),
+  grow: z.number().min(0).max(4000).default(0),
+  /** the section fills exactly one screen height (content centred): on phones only, or on every screen */
+  fullScreen: z.enum(["off", "mobile", "always"]).optional(),
+  /** scale the whole section with the screen's width, like a picture (the same look everywhere: spacing, sizes, sticker places) instead of re-flowing it */
+  shrink: z.boolean().optional(),
+  /** which screens show the section: every screen, or large screens only (hidden on phones) */
+  showOn: z.enum(["all", "desktop", "phone"]).optional(),
   blocks: z.array(block).max(MAX_BLOCKS),
 });
 
@@ -229,6 +326,8 @@ export const settingsSchema = z.object({
     .object({
       mode: z.enum(PAGE_MODES),
       transition: z.enum(SCREEN_TRANSITIONS),
+      /** every section scales with the screen (a phone shows a smaller copy of the large-screen page), unless a section says otherwise */
+      sameLook: z.boolean().optional(),
       intro: z
         .object({
           on: z.boolean(),
@@ -244,14 +343,24 @@ export const settingsSchema = z.object({
           bgFrom: z.union([hex, z.literal("")]).default(""),
           bgTo: z.union([hex, z.literal("")]).default(""),
           textColor: z.union([hex, z.literal("")]).default(""),
-          font: z.enum(ENVELOPE_FONTS).default("serif"),
+          font: z.preprocess((v) => (typeof v === "string" && OLD_ENVELOPE_FONTS[v]) || v, z.enum(ENVELOPE_FONTS)).default("elegant"),
           /** a short message written on the letter that slides out */
           letter: text(60).default(""),
+          /** the letter paper inside: its colour ("" = made from the envelope paper), a printed pattern and a frame */
+          letterPaper: z.union([hex, z.literal("")]).default(""),
+          letterPattern: z.enum(LETTER_PATTERNS).default("plain"),
+          letterBorder: z.enum(LETTER_BORDERS).default("single"),
+          /** how big the message on the letter is written */
+          letterSize: z.enum(["sm", "md", "lg", "xl"]).default("md"),
+          /** bend the heading / the "from" line along an arc (-100 smile … 0 straight … 100 rainbow) */
+          titleCurve: z.number().min(-100).max(100).optional(),
+          senderCurve: z.number().min(-100).max(100).optional(),
         }),
     })
     .default(DEFAULT_PAGE),
   theme: z.object({ mode: z.enum(["light", "dark"]), accent: text(40).regex(/^([a-z]+|#[0-9a-fA-F]{6})$/), design: z.enum(["bento", "clay"]), font: z.enum(FONT_STYLES).default("playful") }),
-  sections: z.array(section).max(MAX_SECTIONS),
+  // + 1: the opening card's own section (CARD_SECTION)
+  sections: z.array(section).max(MAX_SECTIONS + 1),
   decorations: z
     .array(
       z.object({
@@ -276,6 +385,14 @@ export const settingsSchema = z.object({
         /** in front of the section's text and pictures, or behind them (it never moves them either way) */
         layer: z.enum(["front", "back"]).default("front"),
         path: pathSchema.default(DEFAULT_PATH),
+        /** how it first appears, and after how many seconds */
+        enter: z.enum(ENTER_EFFECTS).optional(),
+        enterDelay: z.number().min(0).max(30).optional(),
+        /** picture stickers: the upload as it was before its background was removed */
+        original: upload.optional(),
+        /** the phone layout: its own place, size and turn on phones (unset = as on large screens), and which screens show it */
+        m: z.object({ x: z.number().min(0).max(100), y: z.number().min(0).max(100), size: z.number().min(4).max(5000), rotate: z.number().min(-180).max(180) }).partial().optional(),
+        showOn: z.enum(["all", "desktop", "phone"]).optional(),
       })
         .refine((d) => d.kind !== "image" || upload.safeParse(d.content).success, { path: ["content"], message: "An image sticker needs an uploaded picture" }),
     )
@@ -302,6 +419,184 @@ export function decorPath(d: { x: number; y: number; path: { x: number; y: numbe
 }
 
 /** Replace {name} in every text with the event name. */
+/** The opening card's background: plain (white, or dark in dark mode) unless a colour is picked; a gradient only when a bottom colour is set too.
+ *  Shared (not in the client-only card component) because the live page, drawn on the server, uses it too. */
+export function cardBackground(intro: Settings["page"]["intro"]) {
+  // older cards may have only a bottom colour: their top stays white, as the settings show
+  return intro.bgTo ? `linear-gradient(180deg, ${intro.bgFrom || "#ffffff"} 0%, ${intro.bgTo} 100%)` : intro.bgFrom || "var(--color-surface)";
+}
+
+/* ---- where a sticker sits across its section, at any screen width ----
+ * Stickers are placed (x, in %) on the editor's sticker band, 1052px wide, where the section's text column is 768px (1020px when "wide") in the middle.
+ * On a narrower screen the column fills almost the whole width, so a plain % would push margin stickers onto the text.
+ * Instead each part keeps its own part: a sticker in the left / right margin stays in that margin (squeezed with it), one over the column stays at the same point of the column.
+ * At 1052px and wider the band is exactly as drawn, so nothing moves. Positions are worked out in CSS (100cqw = the band's width), so the live page needs no script. */
+export const DECOR_BAND = 1052;
+const DECOR_PAD = 32; // the section's side padding (px-4, both sides)
+const decorCol = (band: number, wide: boolean) => Math.min(band - DECOR_PAD, wide ? 1152 : 768);
+
+/** CSS `left` for a sticker at x% of the band (wide: the section uses its wide column).
+ *  In a side margin (between the section's edge and its text column) it keeps to whichever it is near:
+ *  at the very edge it stays at the edge, beside the text it stays beside the text, smoothly in between (w = 0 … 1 across the margin).
+ *  Where the margin is narrower than in the editor (phones) the margin is simply squeezed. */
+const smooth = (w: number) => w * w * (3 - 2 * w);
+export function decorLeft(x: number, wide: boolean): string {
+  const B = DECOR_BAND, c = decorCol(B, wide), m = (B - c) / 2, X = (x / 100) * B;
+  const col = `min(100cqw - ${DECOR_PAD}px, ${wide ? 1152 : 768}px)`;
+  const margin = `((100cqw - ${col}) / 2)`;
+  const k = (n: number) => n.toFixed(4);
+  // distance into the margin, measured from the section's edge, on a screen with a margin `margin` (the editor's is m)
+  const into = (d: number) => `(${k(d / m)} * min(${margin}, ${m}px) + ${k(smooth(Math.min(1, d / m)))} * max(0px, ${margin} - ${m}px))`;
+  if (X <= m) return `calc(${into(X)})`;
+  if (X >= B - m) return `calc(100cqw - ${into(B - X)})`;
+  return `calc(${margin} + ${k((X - m) / c)} * ${col})`;
+}
+
+/** the other way: a point `px` from the left of a band `band` px wide, as the sticker's x% */
+export function decorXFromPx(px: number, band: number, wide: boolean): number {
+  const B = DECOR_BAND, c = decorCol(B, wide), m = (B - c) / 2;
+  const cl = decorCol(band, wide), ml = (band - cl) / 2;
+  // a distance from the edge on this screen -> the editor's distance (undoes `into`, which only grows with d)
+  const back = (dist: number) => {
+    if (ml <= m) return ml > 0 ? (dist / ml) * m : 0;
+    let lo = 0, hi = m;
+    for (let i = 0; i < 30; i++) {
+      const mid = (lo + hi) / 2;
+      if (mid + smooth(mid / m) * (ml - m) < dist) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  const X = px <= ml ? back(Math.max(0, px)) : px >= band - ml ? B - back(Math.max(0, band - px)) : m + ((px - ml) / cl) * c;
+  return Math.max(0, Math.min(100, Math.round((X / B) * 1000) / 10));
+}
+
+/* ---- the phone layout ----
+ * Elements, stickers and card boxes can have their own place and size on phones ("m"), set in the editor's Phone mode.
+ * The live page carries both and switches with a container query on the page's width (below 48rem = phone), see globals.css. */
+const PHONE_DECOR_KEYS = ["x", "y", "size", "rotate"] as const;
+const PHONE_BLOCK_KEYS = ["x", "y", "groupX", "groupY", "groupW", "groupH"] as const;
+
+/** a sticker as it sits on phones */
+export function phoneDecor(d: Decoration): Decoration {
+  return d.m ? { ...d, ...d.m } : d;
+}
+/** an element as it sits on phones */
+export function phoneBlock(b: Block): Block {
+  if (!b.m) return b;
+  const o = { ...b };
+  for (const k of PHONE_BLOCK_KEYS) if (b.m[k] !== undefined) (o as Record<string, unknown>)[k] = b.m[k];
+  return o;
+}
+/** the whole design as the phone layout shows it (the editor's Phone mode draws and edits this) */
+export function phoneSettings(s: Settings): Settings {
+  return { ...s, decorations: s.decorations.map(phoneDecor), sections: s.sections.map((sec) => ({ ...sec, blocks: sec.blocks.map(phoneBlock) })) };
+}
+/** a change to a sticker made in Phone mode: its place, size and turn go to the phone layout, everything else to the sticker itself */
+export function splitDecorPatch(d: Decoration, patch: Partial<Decoration>): Partial<Decoration> {
+  const out: Partial<Decoration> = {};
+  const m = { ...(d.m ?? {}) };
+  let phone = false;
+  for (const [k, v] of Object.entries(patch)) {
+    if ((PHONE_DECOR_KEYS as readonly string[]).includes(k)) {
+      (m as Record<string, unknown>)[k] = v;
+      phone = true;
+    } else (out as Record<string, unknown>)[k] = v;
+  }
+  return phone ? { ...out, m } : out;
+}
+/** the same for an element / card box (its place and the box's size) */
+export function splitBlockPatch(b: Block, patch: Partial<Block>): Partial<Block> {
+  const out: Partial<Block> = {};
+  const m = { ...(b.m ?? {}) };
+  let phone = false;
+  for (const [k, v] of Object.entries(patch)) {
+    if ((PHONE_BLOCK_KEYS as readonly string[]).includes(k)) {
+      (m as Record<string, unknown>)[k] = v;
+      phone = true;
+    } else (out as Record<string, unknown>)[k] = v;
+  }
+  return phone ? { ...out, m } : out;
+}
+
+/** HTML attributes + CSS variables that carry a sticker's phone layout (applied by globals.css on phone-sized pages) */
+export function decorPhoneAttrs(d: Decoration): { attrs: Record<string, string>; vars: Record<string, string> } {
+  const attrs: Record<string, string> = {}, vars: Record<string, string> = {};
+  if (d.m?.x !== undefined || d.m?.y !== undefined) {
+    attrs["data-m-pos"] = "";
+    vars["--m-x"] = `${d.m.x ?? d.x}%`;
+    vars["--m-y"] = `${d.m.y ?? d.y}%`;
+  }
+  if (d.m?.size !== undefined) {
+    attrs["data-m-size"] = "";
+    vars["--m-s"] = String(d.m.size);
+  }
+  if (d.m?.rotate !== undefined) {
+    attrs["data-m-rot"] = "";
+    vars["--m-r"] = `${d.m.rotate}deg`;
+  }
+  if (d.showOn && d.showOn !== "all") attrs["data-show"] = d.showOn;
+  return { attrs, vars };
+}
+/** the same for an element's wrapper */
+export function blockPhoneAttrs(b: Block): { attrs: Record<string, string>; vars: Record<string, string> } {
+  const attrs: Record<string, string> = {}, vars: Record<string, string> = {};
+  if (b.m?.x !== undefined || b.m?.y !== undefined) {
+    attrs["data-m-bpos"] = b.overlap || b.group ? "top" : "";
+    vars["--m-bx"] = `${b.m.x ?? b.x}%`;
+    vars["--m-by"] = `${b.m.y ?? b.y}px`;
+  }
+  if (b.m?.zoom !== undefined && b.m.zoom !== 100) {
+    attrs["data-m-zoom"] = "";
+    vars["--m-z"] = String(b.m.zoom / 100);
+  }
+  if (b.showOn && b.showOn !== "all") attrs["data-show"] = b.showOn;
+  return { attrs, vars };
+}
+/** the same for a card box (read from its first element) */
+export function groupPhoneAttrs(b: Block): { attrs: Record<string, string>; vars: Record<string, string> } {
+  const attrs: Record<string, string> = {}, vars: Record<string, string> = {};
+  if (b.m?.groupX !== undefined || b.m?.groupY !== undefined) {
+    attrs["data-m-gpos"] = b.groupFloat ? "top" : "";
+    vars["--m-gx"] = `${b.m.groupX ?? b.groupX ?? 0}%`;
+    vars["--m-gy"] = `${b.m.groupY ?? b.groupY ?? 0}px`;
+  }
+  if (b.m?.groupW !== undefined) {
+    attrs["data-m-gw"] = "";
+    vars["--m-gw"] = `${b.m.groupW}%`;
+  }
+  if (b.m?.groupH !== undefined) {
+    attrs["data-m-gh"] = "";
+    vars["--m-gh"] = `${b.m.groupH}px`;
+  }
+  if (b.showOn && b.showOn !== "all") attrs["data-show"] = b.showOn; // the box itself (its background, border) hides with its contents
+  return { attrs, vars };
+}
+
+/** Does this section scale with the screen? Its own setting wins; otherwise the page's "same look on every screen",
+ *  except for sections holding the RSVP form or a map, which stay full size so they are easy to use on a phone. */
+export function sectionScales(sec: Section, page: Settings["page"]): boolean {
+  if (sec.shrink !== undefined) return sec.shrink;
+  return !!page.sameLook && !sec.blocks.some((b) => b.type === "rsvp" || b.type === "map");
+}
+
+/** The section holding what is added to the opening card (elements, stickers). It is drawn on the envelope screen, never on the page, and always sits last in `sections`. */
+export const CARD_SECTION = "opening-card";
+export const isCardSection = (id: string | null | undefined) => id === CARD_SECTION;
+/** the page's own sections (without the opening card's) */
+export const pageSections = (s: Settings) => s.sections.filter((x) => x.id !== CARD_SECTION);
+
+/** Make sure the opening card has its section, kept at the end of the list. */
+export function withCardSection(s: Settings): Settings {
+  const card = s.sections.find((x) => x.id === CARD_SECTION);
+  const rest = pageSections(s);
+  if (card && s.sections[s.sections.length - 1] === card) return s;
+  return {
+    ...s,
+    sections: [...rest, card ?? { id: CARD_SECTION, name: "Card", bg: "plain", bgColor: "", hidden: false, panel: "none", border: DEFAULT_BORDER, gradient: DEFAULT_GRADIENT, effect: "none", card: false, wide: false, pad: "sm", grow: 0, blocks: [] }],
+  };
+}
+
 export function applyName(s: Settings): Settings {
   const name = s.name || "[Event name]";
   const walk = (v: unknown): unknown =>
@@ -317,7 +612,7 @@ export function applyName(s: Settings): Settings {
 }
 
 export function newBlock(type: BlockType, id: string): Block {
-  const base: Block = { id, type, text: "", text2: "", text3: "", url: "", icon: "", size: "md", tone: "ink", caps: false, fxBg: "none", images: [], labels: {}, parts: [], frame: "none", tap: "none", back: "", group: "", groupDir: "col", overlap: false, deco: null, x: 0, y: 0 };
+  const base: Block = { id, type, text: "", text2: "", text3: "", url: "", icon: "", size: "md", tone: "ink", caps: false, fxBg: "none", images: [], labels: {}, parts: [], frame: "none", tap: "none", back: "", group: "", groupDir: "col", groupStyle: "none", groupCrown: "none", groupColor: "", overlap: false, color: "", deco: null, x: 0, y: 0 };
   switch (type) {
     case "badge": return { ...base, text: "New badge" };
     case "heading": return { ...base, text: "New heading", size: "lg" };
@@ -335,6 +630,8 @@ export function newBlock(type: BlockType, id: string): Block {
     case "map": return { ...base, text: "Find us", icon: "14" };
     case "divider": return base;
     case "spacer": return base;
+    // ribbon: text = the words on it, color = ribbon colour ("" = the accent)
+    case "ribbon": return { ...base, text: "Little Racer" };
     case "illustration": return { ...base, deco: { kind: "emoji", content: "🎈", size: 80, rotate: 0, color: "#a1a1aa", effect: "none", flip: false, sx: 1, sy: 1, shape: "original", opacity: 100 } };
   }
 }
@@ -342,9 +639,15 @@ export function newBlock(type: BlockType, id: string): Block {
 export function imageUrls(s: Settings): string[] {
   return [
     ...s.sections.flatMap((sec) =>
-      sec.blocks.flatMap((b) => [...b.images.map((i) => i.url), ...((b.type === "image" || b.type === "map") && b.url.startsWith("/api/img/") ? [b.url] : [])]),
+      sec.blocks.flatMap((b) => [
+        ...b.images.map((i) => i.url),
+        ...((b.type === "image" || b.type === "map") && b.url.startsWith("/api/img/") ? [b.url] : []),
+        ...(b.original ? [b.original] : []),
+        // a picture illustration placed in the layout keeps its upload too
+        ...(b.deco?.kind === "image" ? [b.deco.content, ...(b.deco.original ? [b.deco.original] : [])] : []),
+      ]),
     ),
-    ...s.decorations.filter((d) => d.kind === "image").map((d) => d.content),
+    ...s.decorations.filter((d) => d.kind === "image").flatMap((d) => [d.content, ...(d.original ? [d.original] : [])]),
   ];
 }
 

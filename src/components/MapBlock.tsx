@@ -122,8 +122,9 @@ export default function MapBlock({ title, location, zoom, size, interactive, ava
         />
       </div>
 
-      {interactive && (
-        <div className="grid justify-items-center gap-3">
+      {/* the editor shows the same route button (not clickable there), so the map takes the same room as on the live page */}
+      {(
+        <div className={`grid justify-items-center gap-3 ${interactive ? "" : "pointer-events-none"}`} aria-hidden={interactive ? undefined : true} inert={!interactive}>
           {from ? (
             <Button variant="outline" size="md" shape="pill" icon="map-pin" loading={busy} onClick={start}>
               Update my location

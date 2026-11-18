@@ -142,7 +142,8 @@ export default function SectionBorder({ border, id }: { border: Section["border"
   if (!sides.length) return null;
   const uid = `bd${id.replace(/[^a-z0-9]/gi, "")}`;
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
+    // rounded-[inherit]: the artwork is cut to its box's rounded corners
+    <div aria-hidden className="pointer-events-none absolute inset-0 z-[5] overflow-hidden rounded-[inherit]">
       {sides.map((s) => <Edge key={s} side={s} id={border[s] as Exclude<BorderId, "none">} size={border.size} curve={border.curve ?? 0} wave={border.wave ?? 0} uid={uid} />)}
     </div>
   );

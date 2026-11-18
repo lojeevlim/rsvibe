@@ -887,7 +887,7 @@ export const ART_CATEGORIES: [string, string[]][] = [
   ["Holidays", ["tree", "santa-hat", "candy-cane", "ornament", "wreath", "snowflake", "stocking", "gingerbread", "pumpkin", "ghost", "easter-egg"]],
   ["Love & wedding", ["heart", "rings", "rose", "love-letter", "wedding-cake"]],
   ["Achievements", ["trophy", "medal", "crown", "grad-cap", "podium"]],
-  ["Racing", ["race-car", "checkered-flag", "start-lights", "speedometer", "steering-wheel", "tire", "helmet", "finish-line"]],
+  ["Racing", ["race-car", "checkered-flag", "crossed-flags", "race-road", "start-lights", "speedometer", "steering-wheel", "tire", "helmet", "finish-line"]],
   ["Nature & animals", ["sun", "moon", "rainbow", "cloud", "flower", "butterfly", "rocket", "duck", "cat", "teddy", "paw", "fish"]],
   ["Home", ["house", "key"]],
 ];

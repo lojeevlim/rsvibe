@@ -26,6 +26,9 @@ body {
 
 /* font styles: each pairing swaps the body and heading font variables for everything inside the wrapper */
 [data-font] { font-family: var(--font-sans), system-ui, sans-serif; }
+/* the playful pair under names no font style overrides, so a playful wrapper inside another style (the opening card) can switch back */
+:root { --font-nunito: var(--font-sans); --font-fredoka: var(--font-display); }
+[data-font="playful"] { --font-sans: var(--font-nunito); --font-display: var(--font-fredoka); }
 [data-font="modern"] { --font-sans: var(--font-inter); --font-display: var(--font-poppins); }
 [data-font="elegant"] { --font-sans: var(--font-lora); --font-display: var(--font-playfair); }
 [data-font="bold"] { --font-sans: var(--font-dmsans); --font-display: var(--font-grotesk); }
@@ -77,6 +80,77 @@ h1, h2, h3, .font-display {
 }
 .decor-host { container-type: inline-size; }
 
+/* ---- the phone layout (Phone mode in the editor): below 48rem of page width, elements, stickers and card boxes take their own phone place / size (set in the editor's Phone mode),
+   and "show on" hides what is for the other kind of screen. !important: it wins over the large-screen values written on the element. ---- */
+@container screen (width < 48rem) {
+  /* the phone places and sizes: not inside a section that scales the large-screen design (it shows that design as it is) */
+  .decor[data-m-pos]:not(.fit-inner *) { left: var(--m-x) !important; top: var(--m-y) !important; }
+  .decor[data-m-size]:not(.fit-inner *) { --s: var(--m-s) !important; }
+  .decor[data-m-rot]:not(.fit-inner *) { --r: var(--m-r) !important; }
+  [data-m-bpos]:not(.fit-inner *) { left: var(--m-bx) !important; margin-top: var(--m-by) !important; }
+  [data-m-bpos="top"]:not(.fit-inner *) { margin-top: 0 !important; top: var(--m-by) !important; }
+  [data-m-zoom]:not(.fit-inner *) { zoom: var(--m-z); }
+  [data-group][data-m-gpos=""]:not(.fit-inner *) { position: relative; left: var(--m-gx) !important; margin-top: var(--m-gy) !important; }
+  [data-group][data-m-gpos="top"]:not(.fit-inner *) { left: var(--m-gx) !important; top: var(--m-gy) !important; }
+  [data-group][data-m-gw]:not(.fit-inner *) { width: var(--m-gw) !important; }
+  [data-group][data-m-gh]:not(.fit-inner *) { min-height: var(--m-gh) !important; justify-content: center; }
+  [data-show="desktop"]:not(.editing *) { display: none !important; }
+  .editing [data-show="desktop"] { opacity: 0.35; outline: 2px dashed #94a3b8; outline-offset: 2px; }
+}
+@container screen (width >= 48rem) {
+  [data-show="phone"]:not(.editing *) { display: none !important; }
+  .editing [data-show="phone"] { opacity: 0.35; outline: 2px dashed #94a3b8; outline-offset: 2px; }
+}
+
+/* "Scale with the screen" (a section setting): the section is laid out once, at the editor's section width, then zoomed to the screen's width,
+   so it is the same picture on every screen (smaller on phones, bigger on large monitors) and nothing in it depends on the screen's px.
+   tan(atan2(a, b)) turns the length ratio a / b into a plain number for zoom. */
+.fit-inner { width: 1052px; zoom: tan(atan2(100cqw, 1052px)); container: page / inline-size; /* inside, the large-screen styles apply on every screen */ }
+/* where a section's stickers live (the sticker band): the whole section. Positions are placed by decorLeft (settings-shared.ts): a sticker keeps to the section's edge
+   or to its text column, whichever it is near, so it sits in the same spot relative to them in the editor, the preview and on any screen; sizes never grow past their set size */
+.decor-band { position: absolute; top: 0; bottom: 0; left: 50%; width: 100%; translate: -50% 0; container-type: inline-size; } /* the whole section: a sticker at its edge stays at its edge (decorLeft) */
+/* the opening card's own elements and stickers move with its words: they rise in with the card, fade away as the envelope opens, and come back after it closes */
+.card-host :is([data-card-content], [data-decor-layer], .decor:not(.decor-flow)) { transition: opacity 0.5s ease; }
+.card-host :is([data-card-content], .decor:not(.decor-flow):not([data-enter])) { animation: card-in 0.9s 0.15s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+/* once the envelope opens only the envelope (and its letter, seal and the effect) stays: the card's words, elements and stickers all go.
+   Stickers fade by their whole layer, so one that is playing its own entrance goes too */
+:is(.card-host[data-card-phase="opening"], .card-host:has([data-card-phase="opening"])) :is([data-card-content], [data-decor-layer], .decor:not(.decor-flow)) { opacity: 0; }
+:is(.card-host[data-card-phase="closing"], .card-host:has([data-card-phase="closing"])) :is([data-card-content], [data-decor-layer], .decor:not(.decor-flow)) { transition-delay: 0.6s; }
+@keyframes card-in { from { opacity: 0; translate: 0 14px; } }
+
+/* stickers' entrances (Appear): each waits (hidden) until its section is in view, then plays after its own delay.
+   Only the separate translate / scale / rotate / filter properties are animated, so the sticker's own position and tilt stay put. */
+.decor[data-enter] { animation: var(--enter-anim) var(--enter-delay, 0s) both; animation-play-state: paused !important; } /* !important: also holds a sticker whose path motion sets its animation inline */
+:is([data-in], .card-host) .decor[data-enter], .decor[data-enter][data-play] { animation-play-state: running !important; }
+.decor[data-enter="fade"] { --enter-anim: d-in-fade 0.9s ease-out; }
+.decor[data-enter="bounce"] { --enter-anim: d-in-bounce 1s cubic-bezier(0.28, 0.84, 0.42, 1); }
+.decor[data-enter="blur"] { --enter-anim: d-in-blur 0.9s ease-out; }
+.decor[data-enter="zoom"] { --enter-anim: d-in-zoom 0.7s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="pop"] { --enter-anim: d-in-pop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.decor[data-enter="slide-up"] { --enter-anim: d-in-up 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="slide-down"] { --enter-anim: d-in-down 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="slide-left"] { --enter-anim: d-in-left 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="slide-right"] { --enter-anim: d-in-right 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="drop"] { --enter-anim: d-in-drop 0.9s linear; }
+.decor[data-enter="spin"] { --enter-anim: d-in-spin 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="flip"] { --enter-anim: d-in-flip 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.decor[data-enter="swing"] { --enter-anim: d-in-swing 1s ease-out; }
+@keyframes d-in-fade { from { opacity: 0; } }
+@keyframes d-in-bounce { 0% { opacity: 0; translate: 0 -70px; } 45% { opacity: 1; translate: 0 0; } 65% { translate: 0 -16px; } 82% { translate: 0 0; } 92% { translate: 0 -4px; } 100% { translate: 0 0; } }
+@keyframes d-in-blur { from { opacity: 0; filter: blur(14px); scale: 1.08; } }
+@keyframes d-in-zoom { from { opacity: 0; scale: 0.3; } }
+@keyframes d-in-pop { 0% { opacity: 0; scale: 0; } 70% { opacity: 1; scale: 1.15; } 100% { scale: 1; } }
+@keyframes d-in-up { from { opacity: 0; translate: 0 50px; } }
+@keyframes d-in-down { from { opacity: 0; translate: 0 -50px; } }
+@keyframes d-in-left { from { opacity: 0; translate: 60px 0; } }
+@keyframes d-in-right { from { opacity: 0; translate: -60px 0; } }
+@keyframes d-in-drop { 0% { opacity: 0; translate: 0 -160px; animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45); } 55% { opacity: 1; translate: 0 0; scale: 1.08 0.9; animation-timing-function: ease-out; } 75% { translate: 0 -12px; scale: 0.97 1.03; } 100% { translate: 0 0; scale: 1; } }
+@keyframes d-in-spin { from { opacity: 0; rotate: -200deg; scale: 0.4; } }
+@keyframes d-in-flip { from { opacity: 0; rotate: y 90deg; } }
+@keyframes d-in-swing { 0% { opacity: 0; rotate: -25deg; } 40% { opacity: 1; rotate: 14deg; } 65% { rotate: -7deg; } 85% { rotate: 3deg; } 100% { rotate: 0deg; } }
+@media (prefers-reduced-motion: reduce) { .decor[data-enter] { --enter-anim: d-in-fade 0.4s ease-out; } }
+@media (prefers-reduced-motion: reduce) { .card-host :is([data-card-content], .decor) { animation: none; transition: none; } }
+
 /* ---- admin live preview ---- */
 .page-bg {
   background-color: var(--color-surface);
@@ -86,15 +160,34 @@ h1, h2, h3, .font-display {
 .editing [data-section]:hover:not(.is-selected):not(:has([data-block]:hover)) { outline: 2px dashed color-mix(in oklab, var(--edit-sel) 65%, transparent); outline-offset: -3px; }
 
 /* ---- admin block editing ---- */
-.editing [data-block]:hover:not(.is-selected) { outline: 2px solid color-mix(in oklab, var(--edit-sel) 70%, transparent); outline-offset: 3px; border-radius: 8px; background: color-mix(in oklab, var(--edit-sel) 7%, transparent); }
-.editing [data-block].is-picked { outline: 3px solid var(--edit-sel); outline-offset: 4px; border-radius: 8px; background: color-mix(in oklab, var(--edit-sel) 14%, transparent); box-shadow: 0 0 0 8px color-mix(in oklab, var(--edit-sel) 22%, transparent); animation: pick-glow 1.6s ease-in-out infinite; }
+/* the frame of an element is its fitted .block-ring element, fitted to what it shows (see useFittedRing), not its full-width row */
+/* stickers and illustrations in the editor answer only where they are drawn: a drawing's shapes, a picture, the text, never the empty part of their box */
+.editing .decor:not(.decor-flow) { pointer-events: none !important; }
+.editing .decor:not(.decor-flow) svg { pointer-events: none; }
+.editing .decor:not(.decor-flow) svg :is(path, circle, rect, ellipse, polygon, polyline, line, text, image, use) { pointer-events: visiblePainted; }
+.editing .decor:not(.decor-flow):is(.decor-text, .decor-graffiti, .decor-emoji) > span > span.block, .editing .decor:not(.decor-flow) img { pointer-events: auto; }
+.editing .decor [data-fit-frame] * { pointer-events: auto; } /* its handles */
+/* in the editor a picture is moved only by the editor's own drag, never picked up by the browser's drag-and-drop (which would cut the drag short) */
+.editing img { -webkit-user-drag: none; user-select: none; }
+.editing [data-block] > .block-ring { opacity: 0; transition: opacity 0.12s; } /* its corners come from the element (a pill button, a rounded picture) */
+/* the grab hand appears only over an element itself (data-hot is set by the editor from what really shows under the pointer) */
+.editing [data-block] { cursor: default; }
+.editing [data-block][data-hot="1"] { cursor: grab; }
+.editing [data-block][data-hot="1"]:active { cursor: grabbing; }
+.editing [data-block][data-hot="1"]:not(.is-selected) > .block-ring { opacity: 1; outline: 2px solid color-mix(in oklab, var(--edit-sel) 70%, transparent); background: color-mix(in oklab, var(--edit-sel) 7%, transparent); }
+.editing [data-block].is-picked > .block-ring { opacity: 1; outline: 3px solid var(--edit-sel); background: color-mix(in oklab, var(--edit-sel) 14%, transparent); box-shadow: 0 0 0 8px color-mix(in oklab, var(--edit-sel) 22%, transparent); animation: pick-glow 1.6s ease-in-out infinite; }
 .pick-bar { animation: pick-bar-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
 @keyframes pick-bar-in { from { opacity: 0; transform: translate(-50%, 24px); } }
 .pick-badge { animation: pick-pop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
 @keyframes pick-pop { from { transform: scale(0); } to { transform: scale(1); } }
 @keyframes pick-glow { 50% { box-shadow: 0 0 0 12px color-mix(in oklab, var(--edit-sel) 8%, transparent); } }
-.editing [data-group] { outline: 1px dashed color-mix(in oklab, var(--edit-sel) 45%, transparent); outline-offset: 6px; border-radius: 10px; }
-.editing [data-block].is-selected { outline: 3px solid var(--edit-sel); outline-offset: 4px; border-radius: 8px; }
+.editing .group-tag { opacity: 0.85; transition: opacity 0.15s; cursor: pointer; }
+.editing [data-group]:hover > .group-tag, .editing [data-group].is-group-sel > .group-tag, .editing [data-group]:has(.is-selected) > .group-tag { opacity: 1; }
+.editing [data-group]:has(.is-selected) { outline: 3px solid var(--edit-sel); outline-offset: 0; }
+.editing [data-group] { cursor: pointer; }
+.editing [data-group].is-group-sel { outline: 3px solid var(--edit-sel); outline-offset: 0; }
+.editing [data-group] { outline: 2px solid var(--edit-sel); outline-offset: 0; }
+.editing [data-block].is-selected > .block-ring { opacity: 1; outline: 3px solid var(--edit-sel); }
 .drop-line { position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px; background: var(--color-accent-500); z-index: 40; pointer-events: none; }
 
 /* ---- section background effects ---- */
@@ -125,13 +218,15 @@ h1, h2, h3, .font-display {
 .editing.has-selection [data-section]:not(.is-selected) { opacity: 0.45; filter: saturate(0.6); }
 .editing.has-selection [data-section]:not(.is-selected):hover { opacity: 0.85; filter: none; }
 .editing [data-section].is-selected { z-index: 1; }
+/* the element (or card box) under the pointer comes in front of the others, so the one being pointed at is never hidden behind a neighbour */
+.editing :is([data-block], [data-group]):hover { z-index: 60 !important; }
 /* the section under the mouse (and its name tag) always sits above the others */
 .editing [data-section]:hover, .editing [data-section].is-selected:hover { z-index: 50; }
 /* an illustration that is part of the layout: the blue frame hugs the picture itself, so it follows rotate / stretch / mirror */
-.editing [data-block]:has(.decor-flow) { outline: none !important; background: none !important; box-shadow: none !important; animation: none !important; }
+.editing [data-block]:has(.decor-flow) > .block-ring { display: none; }
 .editing [data-block]:hover:not(.is-selected) .decor-flow > span { outline: 2px solid color-mix(in oklab, var(--edit-sel) 70%, transparent); outline-offset: 3px; border-radius: 8px; }
 .editing [data-block].is-picked .decor-flow > span { outline: 3px dashed var(--edit-sel); outline-offset: 4px; border-radius: 8px; background: color-mix(in oklab, var(--edit-sel) 14%, transparent); }
-.editing [data-block].is-selected { animation: select-pulse 0.7s ease-out; }
+.editing [data-block].is-selected > .block-ring { animation: select-pulse 0.7s ease-out; }
 @keyframes select-pulse {
   from { box-shadow: 0 0 0 0 color-mix(in oklab, var(--edit-sel) 55%, transparent); }
   to { box-shadow: 0 0 0 16px transparent; }
@@ -319,8 +414,7 @@ section:has([data-cd-msg]) { padding-block: 0 !important; }
 section:has([data-cd-msg]) > div { max-width: none !important; gap: 0 !important; }
 
 /* a countdown showing its message fills the whole section, which already has its own blue frame: no second outline or pulse ring on the block, so nothing spills past the section edge */
-.editing [data-block]:has([data-cd-msg]).is-selected { outline: none; animation: none; }
-.editing [data-block]:has([data-cd-msg]):hover:not(.is-selected) { outline-offset: -3px; }
+.editing [data-block]:has([data-cd-msg]) > .block-ring { display: none; }
 
 /* Sign-in / terms: entrance and hand-off animations */
 @keyframes rise-in { from { opacity: 0; transform: translateY(18px) scale(0.985); } to { opacity: 1; transform: none; } }

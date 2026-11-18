@@ -1,5 +1,5 @@
-/** Canvas background effects (confetti, snow, rain, stars, fireflies, bubbles, hearts): smooth, depth-aware particles drawn with 2D canvas. */
-export type EffectKind = "confetti" | "snow" | "rain" | "stars" | "fireflies" | "bubbles" | "hearts";
+/** Canvas background effects (confetti, confetti poppers, snow, rain, stars, fireflies, bubbles, hearts): smooth, depth-aware particles drawn with 2D canvas. */
+export type EffectKind = "confetti" | "popper" | "snow" | "rain" | "stars" | "fireflies" | "bubbles" | "hearts";
 
 type Env = { ctx: CanvasRenderingContext2D; size: () => { w: number; h: number }; pal: () => string[] };
 type Sim = { reset: () => void; step: (dt: number, t: number) => void };
@@ -60,6 +60,71 @@ const confetti = (e: Env): Sim => {
         e.ctx.scale(1, Math.cos(p.fp)); // tumbling: the paper flips edge-on and back
         e.ctx.fillStyle = p.col;
         e.ctx.globalAlpha = 0.75 + 0.25 * Math.abs(Math.cos(p.fp));
+        e.ctx.fillRect(-p.cw / 2, -p.ch / 2, p.cw, p.ch);
+        e.ctx.restore();
+      }
+    },
+  };
+};
+
+/** party poppers: bursts of confetti shot up and inward from the lower left and right sides, which then flutter down */
+const popper = (e: Env): Sim => {
+  type P = { x: number; y: number; vx: number; vy: number; rot: number; vr: number; cw: number; ch: number; fp: number; fv: number; ph: number; col: string };
+  let ps: P[] = [];
+  let next = 0;
+  const burst = (side: -1 | 1) => {
+    const { w, h } = e.size();
+    const cols = [...e.pal(), "#fbbf24", "#f472b6", "#38bdf8", "#34d399"];
+    const power = clamp(h / 600, 0.75, 1.5);
+    const n = Math.round(clamp(w / 14, 26, 64));
+    const reach = clamp(w / 700, 0.5, 1.3);
+    for (let i = 0; i < n; i++) {
+      const a = rand(0.5, 1.3); // angle above the horizontal
+      const sp = rand(8, 17) * power;
+      ps.push({
+        x: side < 0 ? rand(-8, 4) : w + rand(-4, 8),
+        y: h * rand(0.72, 0.9),
+        vx: -side * Math.cos(a) * sp * reach, // narrow screens: a shorter throw, so each side stays on its own half
+        vy: -Math.sin(a) * sp,
+        rot: rand(0, 6.3),
+        vr: rand(-0.25, 0.25),
+        cw: rand(7, 13),
+        ch: rand(4, 7),
+        fp: rand(0, 6.3),
+        fv: rand(0.08, 0.2),
+        ph: rand(0, 6.3),
+        col: pick(cols),
+      });
+    }
+    if (ps.length > 420) ps = ps.slice(ps.length - 420);
+  };
+  return {
+    reset() {
+      ps = [];
+      next = 0;
+    },
+    step(dt, t) {
+      const { h } = e.size();
+      if (t >= next) {
+        burst(-1);
+        burst(1);
+        next = t + rand(2.6, 3.6);
+      }
+      const drag = Math.pow(0.975, dt);
+      ps = ps.filter((p) => p.y < h + 20);
+      for (const p of ps) {
+        p.vx *= drag;
+        p.vy = Math.min(p.vy * drag + 0.3 * dt, 2.4); // paper falls slowly once the shot is spent
+        p.x += (p.vx + (p.vy > 1 ? Math.sin(t * 3 + p.ph) * 0.8 : 0)) * dt;
+        p.y += p.vy * dt;
+        p.rot += p.vr * dt;
+        p.fp += p.fv * dt;
+        e.ctx.save();
+        e.ctx.translate(p.x, p.y);
+        e.ctx.rotate(p.rot);
+        e.ctx.scale(1, Math.cos(p.fp));
+        e.ctx.fillStyle = p.col;
+        e.ctx.globalAlpha = 0.8 + 0.2 * Math.abs(Math.cos(p.fp));
         e.ctx.fillRect(-p.cw / 2, -p.ch / 2, p.cw, p.ch);
         e.ctx.restore();
       }
@@ -330,7 +395,7 @@ const hearts = (e: Env): Sim => {
   };
 };
 
-const SIMS: Record<EffectKind, (e: Env) => Sim> = { confetti, snow, rain, stars, fireflies, bubbles, hearts };
+const SIMS: Record<EffectKind, (e: Env) => Sim> = { confetti, popper, snow, rain, stars, fireflies, bubbles, hearts };
 
 export function startEffect(canvas: HTMLCanvasElement, kind: EffectKind): () => void {
   const ctx = canvas.getContext("2d");

@@ -9,7 +9,7 @@ import { resolveRsvpParts, RSVP_DEFAULTS, type RsvpPart, type RsvpPartKey } from
 type Result = { attending: boolean; guests: number; name: string; email: string; emailFailed: boolean } | null;
 
 // how each piece sits in the form's two-column grid, and how its size and alignment are applied
-const WIDTH = { half: "col-span-2 sm:col-span-1", full: "col-span-2", fit: "col-span-2 w-fit" } as const;
+const WIDTH = { half: "col-span-2 @min-[40rem]/page:col-span-1", full: "col-span-2", fit: "col-span-2 w-fit" } as const;
 const FIT_ALIGN = { left: "justify-self-start", center: "justify-self-center", right: "justify-self-end" } as const;
 const TEXT_ALIGN = { left: "text-left", center: "text-center", right: "text-right" } as const;
 const ZOOM = { sm: 0.88, md: 1, lg: 1.15, xl: 1.3 } as const;
@@ -164,7 +164,7 @@ export default function RsvpForm({ title, subtitle, labels = {}, parts: partsPro
     attend: () => (
       <div className="grid gap-3">
         <span className={eyebrow}>{L("attendLabel")}</span>
-        <div className="grid gap-3 sm:grid-cols-2" role="group" aria-label={L("attendLabel")}>
+        <div className="grid gap-3 @min-[40rem]/page:grid-cols-2" role="group" aria-label={L("attendLabel")}>
           <Choice active={attending} onClick={() => setAttending(true)} icon={<Check size={20} />} title={L("yesTitle")} hint={L("yesHint")} />
           <Choice active={!attending} onClick={() => setAttending(false)} icon={<X size={20} />} title={L("noTitle")} hint={L("noHint")} />
         </div>
@@ -189,7 +189,7 @@ export default function RsvpForm({ title, subtitle, labels = {}, parts: partsPro
                   {Math.min(total, 10)} {Math.min(total, 10) === 1 ? L("guestOne") : L("guestMany")}
                 </span>
               </div>
-              <div className="grid gap-4 rounded-2xl bg-surface-muted p-4 sm:grid-cols-2 sm:gap-8 sm:p-5">
+              <div className="grid gap-4 rounded-2xl bg-surface-muted p-4 @min-[40rem]/page:grid-cols-2 @min-[40rem]/page:gap-8 @min-[40rem]/page:p-5">
                 <Counter label={L("adultsLabel")} hint={L("adultsHint")} value={adults} min={1} max={9} onChange={setAdults} />
                 <Counter label={L("kidsLabel")} hint={L("kidsHint")} value={kids} min={0} max={9} onChange={setKids} />
               </div>
@@ -221,9 +221,9 @@ export default function RsvpForm({ title, subtitle, labels = {}, parts: partsPro
   };
 
   return (
-    <div className="px-1 py-1 sm:px-3">
+    <div className="px-1 py-1 @min-[40rem]/page:px-3">
       <div className="mb-9 text-center">
-        <h2 className="text-3xl font-extrabold text-ink md:text-4xl">{title}</h2>
+        <h2 className="text-3xl font-extrabold text-ink @min-[48rem]/page:text-4xl">{title}</h2>
         <p className="mx-auto mt-3 max-w-md text-soft">{subtitle}</p>
       </div>
 

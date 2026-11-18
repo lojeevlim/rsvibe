@@ -293,6 +293,53 @@ const BASE: Record<string, Art> = {
       </>
     ),
   },
+  "crossed-flags": {
+    label: "Racing flags (V)",
+    svg: (
+      <>
+        {/* two poles meeting at the bottom in a V, each with a chequered flag waving outward */}
+        <path d="M30.500 60L20 11" stroke="#64748b" strokeWidth="3" strokeLinecap="round" />
+        <path d="M33.500 60L44 11" stroke="#64748b" strokeWidth="3" strokeLinecap="round" />
+        <g transform="translate(20 11) rotate(-19)">
+          <g>
+            <animateTransform attributeName="transform" type="skewY" values="-6;6;-6" dur="2.2s" repeatCount="indefinite" />
+            {Array.from({ length: 3 }, (_, row) =>
+              Array.from({ length: 3 }, (_, col) => (
+                <rect key={`l${row}-${col}`} x={-18 + col * 6} y={row * 6} width="6" height="6" fill={(row + col) % 2 ? "#0f172a" : "#fff"} stroke="#0f172a" strokeWidth=".5" />
+              )),
+            )}
+          </g>
+        </g>
+        <g transform="translate(44 11) rotate(19)">
+          <g>
+            <animateTransform attributeName="transform" type="skewY" values="-6;6;-6" dur="2.2s" repeatCount="indefinite" />
+            {Array.from({ length: 3 }, (_, row) =>
+              Array.from({ length: 3 }, (_, col) => (
+                <rect key={`r${row}-${col}`} x={col * 6} y={row * 6} width="6" height="6" fill={(row + col) % 2 ? "#fff" : "#0f172a"} stroke="#0f172a" strokeWidth=".5" />
+              )),
+            )}
+          </g>
+        </g>
+        <circle cx="20" cy="10" r="2.800" fill="#fbbf24" />
+        <circle cx="44" cy="10" r="2.800" fill="#fbbf24" />
+        <circle cx="32" cy="60" r="2.400" fill="#475569" />
+      </>
+    ),
+  },
+  "race-road": {
+    label: "Racing road",
+    svg: (
+      <>
+        {/* a winding track: red / white kerbs, grey tarmac, and a white centre line that runs along it */}
+        <path d="M2 58C18 58 16 32 32 32S46 6 62 6" fill="none" stroke="#dc2626" strokeWidth="20" strokeLinecap="butt" />
+        <path d="M2 58C18 58 16 32 32 32S46 6 62 6" fill="none" stroke="#fff" strokeWidth="20" strokeDasharray="4 4" strokeLinecap="butt" />
+        <path d="M2 58C18 58 16 32 32 32S46 6 62 6" fill="none" stroke="#374151" strokeWidth="16" strokeLinecap="butt" />
+        <path d="M2 58C18 58 16 32 32 32S46 6 62 6" fill="none" stroke="#fff" strokeWidth="1.600" strokeDasharray="4 4">
+          <animate attributeName="stroke-dashoffset" from="8" to="0" dur="0.6s" repeatCount="indefinite" />
+        </path>
+      </>
+    ),
+  },
   "start-lights": {
     label: "Start lights",
     svg: (

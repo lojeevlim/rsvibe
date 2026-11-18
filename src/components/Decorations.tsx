@@ -1,6 +1,8 @@
 import type { CSSProperties, HTMLAttributes } from "react";
-import { decorPath, type Decoration } from "@/lib/settings-shared";
+import { decorLeft, decorPath, decorPhoneAttrs, type Decoration } from "@/lib/settings-shared";
 import ArtSvg from "@/components/ArtSvg";
+import EnterWatch from "@/components/EnterWatch";
+import FitFrame from "@/components/FitFrame";
 
 const mask = (path: string): CSSProperties => {
   const url = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='${path}'/></svg>`)}")`;
@@ -21,9 +23,9 @@ function shapeStyle(shape: Decoration["shape"]): { className: string; style?: CS
   }
 }
 
-type Props = { d: Decoration; selected?: boolean; handles?: React.ReactNode; noPath?: boolean; noDelay?: boolean; /** editor: draw only the frame and handles (the picture itself is drawn elsewhere, on another layer) */ ghost?: boolean } & HTMLAttributes<HTMLDivElement>;
+type Props = { d: Decoration; /** page sections: keep the sticker beside / over the text column at any width (see decorLeft); unset (the card) = plain % */ wide?: boolean; /** live page: play its entrance (how it first appears, after its delay) */ enter?: boolean; selected?: boolean; handles?: React.ReactNode; noPath?: boolean; noDelay?: boolean; /** editor: draw only the frame and handles (the picture itself is drawn elsewhere, on another layer) */ ghost?: boolean } & HTMLAttributes<HTMLDivElement>;
 
-export function DecorItem({ d, selected, handles, noPath, noDelay, ghost, className = "", style, ...rest }: Props) {
+export function DecorItem({ d, wide, enter, selected, handles, noPath, noDelay, ghost, className = "", style, ...rest }: Props) {
   const shape = shapeStyle(d.shape ?? "original");
   // path motion: it travels along the path, fades out at the end, pauses (optional), then repeats.
   // The keyframes are generated per sticker so the pause can sit inside one cycle.
@@ -49,16 +51,21 @@ export function DecorItem({ d, selected, handles, noPath, noDelay, ghost, classN
       "}";
     animation = `${name} ${total}s linear infinite`;
   }
+  const phone = decorPhoneAttrs(d); // its own place / size / turn on phones, and which screens show it
+  // its phone x is placed the same way as its large-screen x (beside / over the text column), so dragging keeps it under the pointer
+  if (phone.vars["--m-x"] !== undefined && wide !== undefined) phone.vars["--m-x"] = decorLeft(d.m?.x ?? d.x, wide);
   return (
     <div
       {...rest}
+      {...phone.attrs}
       data-decor={d.id}
+      data-enter={enter && d.enter && d.enter !== "none" ? d.enter : undefined}
       className={`decor decor-${d.kind} fx-${d.effect} ${pts ? "decor-moves" : ""} ${selected && !handles ? "outline-2 outline-dashed outline-offset-4 outline-brand" : ""} ${className}`}
-      style={{ left: `${d.x}%`, top: `${d.y}%`, color: d.color, "--s": d.size, "--r": `${d.rotate}deg`, "--sx": d.sx ?? 1, "--sy": d.sy ?? 1, ...(animation ? { animation } : {}), ...style } as CSSProperties}
+      style={{ left: wide === undefined ? `${d.x}%` : decorLeft(d.x, wide), top: `${d.y}%`, color: d.color, "--s": d.size, "--r": `${d.rotate}deg`, "--sx": d.sx ?? 1, "--sy": d.sy ?? 1, "--enter-delay": `${d.enterDelay ?? 0}s`, ...phone.vars, ...(animation ? { animation: enter && d.enter && d.enter !== "none" ? `var(--enter-anim) var(--enter-delay) both, ${animation}` : animation } : {}), ...style } as CSSProperties}
     >
       {frames && <style>{frames}</style>}
       <span>
-        {selected && handles && <span className="pointer-events-none absolute -inset-1.5 border-2 border-dashed border-brand">{handles}</span>}
+        {selected && handles && <FitFrame>{handles}</FitFrame>}
         <span className="block" style={{ ...(ghost ? { opacity: 0 } : {}), ...(d.flip ? { transform: "scaleX(-1)" } : {}), ...((d.opacity ?? 100) < 100 ? { opacity: d.opacity / 100 } : {}) }}>
           {d.kind === "art" ? (
             <ArtSvg name={d.content} />
@@ -74,7 +81,7 @@ export function DecorItem({ d, selected, handles, noPath, noDelay, ghost, classN
   );
 }
 
-export default function Decorations({ items }: { items: Decoration[] }) {
+export default function Decorations({ items, wide }: { items: Decoration[]; /** see DecorItem */ wide?: boolean }) {
   if (items.length === 0) return null;
   const back = items.filter((d) => d.layer === "back");
   const front = items.filter((d) => d.layer !== "back");
@@ -82,13 +89,15 @@ export default function Decorations({ items }: { items: Decoration[] }) {
   return (
     <>
       {back.length > 0 && (
-        <div aria-hidden className="pointer-events-none absolute inset-0 z-[6] overflow-hidden">
-          {back.map((d) => <DecorItem key={d.id} d={d} />)}
+        <div aria-hidden data-decor-layer className="pointer-events-none absolute inset-0 z-[6] overflow-hidden">
+          {back.some((d) => d.enter && d.enter !== "none") && <EnterWatch />}
+          <div data-decor-band className="decor-band">{back.map((d) => <DecorItem key={d.id} d={d} wide={wide} enter />)}</div>
         </div>
       )}
       {front.length > 0 && (
-        <div aria-hidden className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
-          {front.map((d) => <DecorItem key={d.id} d={d} />)}
+        <div aria-hidden data-decor-layer className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
+          {front.some((d) => d.enter && d.enter !== "none") && <EnterWatch />}
+          <div data-decor-band className="decor-band">{front.map((d) => <DecorItem key={d.id} d={d} wide={wide} enter />)}</div>
         </div>
       )}
     </>

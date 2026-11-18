@@ -1,5 +1,6 @@
 import {
   GalleryHorizontal,
+  Award,
   Heading,
   Hourglass,
   IdCard,
@@ -37,11 +38,12 @@ export const PALETTE: { type: BlockType; Icon: LucideIcon; label: string }[] = [
   { type: "map", Icon: MapPin, label: "Map" },
   { type: "divider", Icon: Minus, label: "Divider" },
   { type: "spacer", Icon: MoveVertical, label: "Spacer" },
+  { type: "ribbon", Icon: Award, label: "Ribbon banner" },
   { type: "illustration", Icon: Sticker, label: "Illustration" },
 ];
 
 export const GROUPS: { title: string; Icon: LucideIcon; types: ElementType[] }[] = [
-  { title: "Text", Icon: Type, types: ["heading", "text", "badge", "script"] },
+  { title: "Text", Icon: Type, types: ["heading", "text", "badge", "script", "ribbon"] },
   { title: "Media", Icon: ImageIcon, types: ["image", "gallery", "map", "sticker"] },
   { title: "Content", Icon: LayoutGrid, types: ["card", "step", "countdown", "rsvp"] },
   { title: "Layout & actions", Icon: MousePointerClick, types: ["button", "divider", "spacer"] },

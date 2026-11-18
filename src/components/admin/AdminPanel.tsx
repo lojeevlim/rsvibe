@@ -16,6 +16,18 @@ import {
   MAX_DECORATIONS,
   MAX_IMAGES,
   MAX_SECTIONS,
+  ENTER_EFFECTS,
+  ENTER_LABELS,
+  CARD_SECTION,
+  isCardSection,
+  pageSections,
+  withCardSection,
+  phoneSettings,
+  phoneDecor,
+  phoneBlock,
+  splitDecorPatch,
+  splitBlockPatch,
+  decorXFromPx,
   newBlock,
   resolveRsvpParts,
   RSVP_FIELDS,
@@ -31,21 +43,22 @@ import {
   type Settings,
 } from "@/lib/settings-shared";
 import {
-  ArrowDown, ArrowLeft, Columns2, Rows2, Ungroup, Eye, MailOpen, ArrowUp, CalendarDays, ChevronDown, GripVertical, Layers, LayoutTemplate, Palette, SlidersHorizontal, Trash2, Keyboard, Redo2, Undo2, MapPin, Maximize2, Plus, RotateCw, Sparkles, Sticker, Type, Wrench, X, type LucideIcon,
+  ArrowDown, ArrowLeft, Columns2, Rows2, Ungroup, Eye, MailOpen, ArrowUp, CalendarDays, ChevronDown, GripVertical, Layers, LayoutTemplate, Palette, SquareStack, Smartphone, SlidersHorizontal, Trash2, Keyboard, Redo2, Undo2, MapPin, Maximize2, Plus, RotateCw, Sparkles, Sticker, Type, Wrench, X, type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import SaveToast from "@/components/SaveToast";
-import PageView from "@/components/PageView";
+import PageView, { imageWidth } from "@/components/PageView";
 import { ICON_OPTIONS } from "@/components/icons";
 import { GROUPS, PALETTE, TEXT_PRESETS } from "@/components/palette";
 import ArtSvg, { ART_OPTIONS } from "@/components/ArtSvg";
-import EnvelopeIntro from "@/components/EnvelopeIntro";
 import { asSealId, SEAL_IDS, SEAL_LABELS, SealEmblem } from "@/components/Seal";
-import { fitAccent, whiteContrast } from "@/lib/color";
+import type { CardPart } from "@/components/EnvelopeIntro";
+import { colorShades, fitAccent, whiteContrast } from "@/lib/color";
 import { applyPreset, EVENT_TYPE_OPTIONS, isPlaceholderName, PRESETS as EVENT_PRESETS } from "@/lib/presets";
 import { DecorItem } from "@/components/Decorations";
-import { drag, type EditActions } from "@/components/edit-ui";
+import { blockAtPoint, BorderPicker, drag, type EditActions } from "@/components/edit-ui";
+import { alphaBoundsNow } from "@/components/FitFrame";
 import {
   ANIMATED_VARIANTS,
   Alert,
@@ -118,9 +131,48 @@ function nextId(prefix: string, used: string[]) {
   return `${prefix}${n}`;
 }
 
+/** the server takes up to 5 MB; big photos are made smaller here first, so they upload instead of being refused */
+const UPLOAD_LIMIT = 5 * 1024 * 1024;
+const SHRINK_OVER = 2 * 1024 * 1024;
+
+/** Scale a large picture down (longest side at most 2400px, then smaller if needed) and re-save it as WebP (or JPEG where the browser can't write WebP).
+ *  GIFs are left alone (re-drawing would stop their animation); so is anything already small, or anything the browser can't read. */
+async function shrinkImage(file: File): Promise<File> {
+  if (file.type === "image/gif" || file.size <= SHRINK_OVER) return file;
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => null);
+  if (!bmp) return file;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return file;
+  const alpha = file.type === "image/png" || file.type === "image/webp";
+  const encode = (type: string, q: number) => new Promise<Blob | null>((res) => canvas.toBlob(res, type, q));
+  let best: Blob | null = null;
+  for (const [side, q] of [[2400, 0.86], [2000, 0.8], [1600, 0.75], [1200, 0.7]] as const) {
+    const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+    canvas.width = Math.round(bmp.width * k);
+    canvas.height = Math.round(bmp.height * k);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    let blob = await encode("image/webp", q);
+    // older Safari writes PNG when asked for WebP; a picture that may be see-through (a cut-out) stays PNG, as JPEG has no transparency
+    if (!blob || blob.type !== "image/webp") blob = await encode(alpha ? "image/png" : "image/jpeg", q);
+    if (blob) best = blob;
+    if (blob && blob.size <= UPLOAD_LIMIT * 0.9) break;
+  }
+  bmp.close();
+  if (!best || best.size >= file.size) return file;
+  const ext = best.type === "image/webp" ? "webp" : best.type === "image/png" ? "png" : "jpg";
+  return new File([best], file.name.replace(/\.[^.]+$/, "") + "." + ext, { type: best.type });
+}
+
 async function uploadFiles(files: FileList | null, max: number, onError: (m: string) => void) {
   const urls: string[] = [];
-  for (const file of Array.from(files ?? []).slice(0, max)) {
+  for (const picked of Array.from(files ?? []).slice(0, max)) {
+    const file = await shrinkImage(picked);
+    if (file.size > UPLOAD_LIMIT) {
+      onError(`${picked.name}: ${file.type === "image/gif" ? "GIFs must be under 5 MB." : "Image is over 5 MB, even after shrinking it."}`);
+      break;
+    }
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch("/api/upload", { method: "POST", body: fd });
@@ -134,10 +186,22 @@ async function uploadFiles(files: FileList | null, max: number, onError: (m: str
   return urls;
 }
 
+type ArrangeOp = "front" | "forward" | "backward" | "back";
+/** the stickers a sticker stacks with: same section, same layer (later in the list = drawn on top) */
+const stackPeers = (all: Decoration[], d: Decoration) => all.filter((x) => x.section === d.section && (x.layer ?? "front") === (d.layer ?? "front"));
+
+/** where a new or moved section may go: never after the opening card's own section, which stays last */
+function insertAt(list: Section[], at: number) {
+  const card = list.findIndex((x) => isCardSection(x.id));
+  return card < 0 ? at : Math.min(at, card);
+}
+
 /** The visual page editor for one event: its design is loaded from and saved to that event. */
 export default function AdminPanel({ initial, eventId, eventTitle, account }: { initial: Settings; eventId: string; eventTitle: string; account: { email: string; name: string; imageUrl: string } }) {
-  const [s, setS] = useState(initial);
-  const [savedJson, setSavedJson] = useState(() => JSON.stringify(initial));
+  // the opening card keeps what is added to it in a section of its own; added here so it isn't counted as an unsaved change
+  const [start] = useState(() => withCardSection(initial));
+  const [s, setS] = useState(start);
+  const [savedJson, setSavedJson] = useState(() => JSON.stringify(start));
   const [view, setView] = useState<"edit" | "rsvps" | "card">("edit");
   /** bumped to play the opening card again (it also remounts the preview so it starts from the closed envelope) */
   const [cardPlay, setCardPlay] = useState(0);
@@ -162,34 +226,66 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   const [elementPanel, setElementPanel] = useState(false);
   // the RSVP form piece being edited in its own floating panel (clicked in the preview)
   const [rsvpPartKey, setRsvpPartKey] = useState<RsvpPartKey | null>(null);
+  /** a sticker's entrance played once in the editor ("Play" in its panel) */
+  const [enterPlay, setEnterPlay] = useState<{ id: string; n: number } | null>(null);
+  const [cardPanel, setCardPanel] = useState<CardPart | null>(null); // a piece of the opening card whose settings float beside it (clicked on the card tab)
   const [stickersPanel, setStickersPanel] = useState(false); // the text-stickers tool (+ Text, + Graffiti, the list)
   const [pendingType, setPendingType] = useState<EventType | null>(null);
   const [selKind, setSelKind] = useState<"sticker" | "block" | "section" | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
-  const headerRef = useRef<HTMLElement>(null);
-  /** where the preview starts: just under the header */
-  const [headerH, setHeaderH] = useState(0);
+  /** which layout the canvas shows and edits: the large-screen one, or the phone one (its own places and sizes, phones only) */
+  const [device, setDevice] = useState<"desktop" | "phone">("desktop");
+  /** large screens: hide the floating Content list and Toolbox to see the page's full width */
+  const [panelsHidden, setPanelsHidden] = useState(false);
+  const phoneMode = device === "phone";
+  /** a change to a sticker: in Phone mode its place, size and turn go to the phone layout */
+  const patchDecor = (d: Decoration, patch: Partial<Decoration>): Decoration => ({ ...d, ...(phoneMode ? splitDecorPatch(d, patch) : patch) });
+  /** the phone view: the page as a phone shows it, in a phone-sized frame beside the editor (live, unsaved changes included) */
+  const [phone, setPhone] = useState(false);
+  const [phoneKey, setPhoneKey] = useState(0);
+  const phoneFrame = useRef<HTMLIFrameElement>(null);
   const startPreview = () => setPreviewing(true);
-  // measured after the header has settled (its second row is hidden while previewing) and again if the window is resized
-  useEffect(() => {
-    if (!previewing) return;
-    const measure = () => setHeaderH(headerRef.current?.offsetHeight ?? 0);
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [previewing]);
   const [stickerPanel, setStickerPanel] = useState(false);
   const [hist, setHist] = useState({ past: 0, future: 0 });
   const past = useRef<Settings[]>([]);
   const future = useRef<Settings[]>([]);
-  const last = useRef<Settings>(initial);
+  const last = useRef<Settings>(start);
   const skip = useRef(false);
   const burst = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clip = useRef<Clip | null>(null);
   const isLg = useIsLg();
+  // desktop: the side panels float over the canvas and can be dragged by their headers.
+  // x is the distance from the panel's anchored edge (left panel: from the left, right panels: from the right)
+  type PanelKey = "settings" | "content" | "toolbox";
+  const [panelPos, setPanelPos] = useState<Record<PanelKey, { x: number; y: number }>>({
+    settings: { x: 16, y: 16 },
+    content: { x: 112, y: 16 },
+    toolbox: { x: 16, y: 16 },
+  });
+  const floatStyle = (key: PanelKey, anchor: "left" | "right") =>
+    isLg ? { [anchor]: panelPos[key].x, top: panelPos[key].y, maxHeight: `calc(100% - ${panelPos[key].y + 16}px)` } : undefined;
+  const startPanelDrag = (key: PanelKey, anchor: "left" | "right") => (e: React.PointerEvent<HTMLElement>) => {
+    if (!isLg || e.button !== 0 || (e.target as HTMLElement).closest("button, a, input")) return;
+    const panel = e.currentTarget.closest("aside");
+    const box = panel?.parentElement?.getBoundingClientRect();
+    if (!panel || !box) return;
+    e.preventDefault();
+    const rect = panel.getBoundingClientRect();
+    const offX = e.clientX - rect.left, offY = e.clientY - rect.top;
+    const move = (ev: PointerEvent) => {
+      const w = panel.offsetWidth;
+      const left = Math.min(Math.max(0, box.width - w), Math.max(0, ev.clientX - box.left - offX));
+      const top = Math.min(Math.max(0, box.height - 60), Math.max(0, ev.clientY - box.top - offY));
+      setPanelPos((p) => ({ ...p, [key]: { x: anchor === "left" ? left : box.width - w - left, y: top } }));
+    };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const dragging = useRef<string | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const hotBlock = useRef<HTMLElement | null>(null);
 
   // focus: bring the selected section / element into view and put the cursor in its first field
   useEffect(() => {
@@ -220,6 +316,8 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   }, [s]);
 
   const dirty = JSON.stringify(s) !== savedJson;
+  /** the section things go into when nothing is picked: the card's own on the card tab, else the page's first */
+  const homeSection = view === "card" ? s.sections.find((x) => isCardSection(x.id)) : pageSections(s)[0];
   const curSection = s.sections.find((x) => x.id === sel.section);
   const curBlock = curSection?.blocks.find((b) => b.id === sel.block);
 
@@ -233,6 +331,8 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     }));
 
   const [multi, setMulti] = useState<string[]>([]);
+  // a group of elements can be selected too (click its box or its "Group" tag) to change its layout and design
+  const [groupSel, setGroupSel] = useState<string | null>(null);
   // the group bar blurs in and out (lojee-ui "blur" transition); it stays mounted while the exit plays
   const [barCount, setBarCount] = useState(0);
   const barOpen = multi.length > 1;
@@ -241,6 +341,10 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     const t = setTimeout(() => setBarCount(0), 450);
     return () => clearTimeout(t);
   }, [barOpen, multi.length]);
+  /** change a setting for every element of a group at once (layout direction, design) */
+  /** a card box's place / size: in Phone mode it goes to the phone layout of each of its elements */
+  const updateGroupDev = (groupId: string, p: Partial<Block>) =>
+    setS((prev) => ({ ...prev, sections: prev.sections.map((x) => ({ ...x, blocks: x.blocks.map((b) => (b.group === groupId ? { ...b, ...(phoneMode ? splitBlockPatch(b, p) : p) } : b)) })) }));
   const actions: EditActions = {
     groupBlocks(ids, dir) {
       const sec = s.sections.find((x) => ids.every((id) => x.blocks.some((b) => b.id === id)));
@@ -250,16 +354,25 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       const first = sec.blocks.indexOf(picked[0]);
       const rest = sec.blocks.filter((b) => !ids.includes(b.id));
       const at = rest.filter((b) => sec.blocks.indexOf(b) < first).length;
-      const made = picked.map((b) => (dir === "none" ? { ...b, group: "" } : { ...b, group: gid, groupDir: dir, x: 0, y: 0 }));
+      const made = picked.map((b) => (dir === "none" ? { ...b, group: "" } : { ...b, group: gid, groupDir: dir, x: 0, y: 0, ...(b.m ? { m: { ...b.m, x: undefined, y: undefined } } : {}) }));
       // an ungrouped element keeps its place; grouped ones are gathered at the first one's place so they sit side by side
       const blocks = dir === "none" ? sec.blocks.map((b) => made.find((m) => m.id === b.id) ?? b) : [...rest.slice(0, at), ...made, ...rest.slice(at)];
       setS((prev) => ({ ...prev, sections: prev.sections.map((x) => (x.id === sec.id ? { ...x, blocks } : x)) }));
       setMulti([]);
     },
+    growSection(id, grow) {
+      updateSection(id, { grow });
+    },
+    sizeGroup(group, w, h) {
+      updateGroupDev(group, { groupW: w, groupH: h });
+    },
+    placeGroup(group, x, y) {
+      updateGroupDev(group, { groupX: x, groupY: y });
+    },
     placeBlock(id, x, y) {
       setS((prev) => ({
         ...prev,
-        sections: prev.sections.map((sec) => (sec.blocks.some((b) => b.id === id) ? { ...sec, blocks: sec.blocks.map((b) => (b.id === id ? { ...b, x, y } : b)) } : sec)),
+        sections: prev.sections.map((sec) => (sec.blocks.some((b) => b.id === id) ? { ...sec, blocks: sec.blocks.map((b) => (b.id === id ? { ...b, ...(phoneMode ? splitBlockPatch(b, { x, y }) : { x, y }) } : b)) } : sec)),
       }));
     },
     moveBlock(id, toSection, index) {
@@ -313,16 +426,16 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     moveSection(id, index) {
       setS((prev) => {
         const from = prev.sections.findIndex((x) => x.id === id);
-        if (from < 0) return prev;
+        if (from < 0 || isCardSection(id)) return prev;
         const list = [...prev.sections];
         const [m] = list.splice(from, 1);
-        list.splice(from < index ? index - 1 : index, 0, m);
+        list.splice(insertAt(list, from < index ? index - 1 : index), 0, m);
         return { ...prev, sections: list };
       });
       setSel({ section: id, block: null });
     },
     removeSection(id) {
-      setConfirmDelete(id);
+      askDeleteSection(id);
     },
     addSticker(sectionId, x, y, preset) {
       addSticker({ ...preset, x: clamp(x), y: clamp(y) }, sectionId);
@@ -333,9 +446,10 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
         ...prev,
         decorations: prev.decorations.map((d) => {
           if (d.id !== selDecor) return d;
-          const turn = (delta: number) => ((((d.rotate + delta + 180) % 360) + 360) % 360) - 180;
-          const size = (f: number) => Math.max(4, Math.round(d.size * f));
-          return op === "flip" ? { ...d, flip: !d.flip } : op === "rotL" ? { ...d, rotate: turn(-15) } : op === "rotR" ? { ...d, rotate: turn(15) } : op === "smaller" ? { ...d, size: size(1 / 1.15) } : { ...d, size: size(1.15) };
+          const v = phoneMode ? phoneDecor(d) : d; // Phone mode: from (and to) its phone size and turn
+          const turn = (delta: number) => ((((v.rotate + delta + 180) % 360) + 360) % 360) - 180;
+          const size = (f: number) => Math.max(4, Math.round(v.size * f));
+          return op === "flip" ? { ...d, flip: !d.flip } : patchDecor(d, op === "rotL" ? { rotate: turn(-15) } : op === "rotR" ? { rotate: turn(15) } : op === "smaller" ? { size: size(1 / 1.15) } : { size: size(1.15) });
         }),
       }));
     },
@@ -362,7 +476,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       setS((prev) => {
         const i = prev.sections.findIndex((x) => x.id === id);
         const j = i + delta;
-        if (i < 0 || j < 0 || j >= prev.sections.length) return prev;
+        if (i < 0 || j < 0 || j >= prev.sections.length || isCardSection(prev.sections[i].id) || isCardSection(prev.sections[j].id)) return prev;
         const list = [...prev.sections];
         [list[i], list[j]] = [list[j], list[i]];
         return { ...prev, sections: list };
@@ -377,8 +491,8 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     },
     duplicateSection(id) {
       const src = s.sections.find((x) => x.id === id);
-      if (!src) return;
-      if (s.sections.length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
+      if (!src || isCardSection(id)) return;
+      if (pageSections(s).length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
       const used = s.sections.flatMap((x) => x.blocks.map((b) => b.id));
       const newId = nextId("s", s.sections.map((x) => x.id));
       const blocks = src.blocks.filter((b) => b.type !== "rsvp").map((b) => {
@@ -394,12 +508,12 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       setSel({ section: newId, block: null });
     },
     addSection(index) {
-      if (s.sections.length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
+      if (pageSections(s).length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
       const id = nextId("s", s.sections.map((x) => x.id));
       const sec: Section = { id, name: "New section", bg: "white", bgColor: "", hidden: false, panel: "none", border: DEFAULT_BORDER, gradient: DEFAULT_GRADIENT, effect: "none", card: false, wide: false, pad: "lg", grow: 0, blocks: [] };
       setS((prev) => {
         const list = [...prev.sections];
-        list.splice(index, 0, sec);
+        list.splice(insertAt(list, index), 0, sec);
         return { ...prev, sections: list };
       });
       setSel({ section: id, block: null });
@@ -410,7 +524,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   function stickerToLayout(d: Decoration) {
     const sec = s.sections.find((x) => x.id === d.section);
     if (!sec || sec.blocks.length >= MAX_BLOCKS) return setMsg({ ok: false, text: "That section is full." });
-    const b: Block = { ...newBlock("illustration", nextId("b", s.sections.flatMap((x) => x.blocks.map((k) => k.id)))), deco: { kind: d.kind, content: d.content, size: d.size, rotate: d.rotate, color: d.color, effect: d.effect, flip: d.flip, sx: d.sx, sy: d.sy, shape: d.shape, opacity: d.opacity } };
+    const b: Block = { ...newBlock("illustration", nextId("b", s.sections.flatMap((x) => x.blocks.map((k) => k.id)))), deco: { kind: d.kind, content: d.content, size: d.size, rotate: d.rotate, color: d.color, effect: d.effect, flip: d.flip, sx: d.sx, sy: d.sy, shape: d.shape, opacity: d.opacity, ...(d.original ? { original: d.original } : {}) } };
     const at = Math.round((d.y / 100) * sec.blocks.length);
     setS((prev) => ({
       ...prev,
@@ -428,12 +542,13 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     const sec = s.sections.find((x) => x.blocks.some((k) => k.id === b.id));
     if (!sec || !b.deco) return;
     if (s.decorations.length >= MAX_DECORATIONS) return setMsg({ ok: false, text: `Up to ${MAX_DECORATIONS} stickers per page.` });
-    const secEl = previewRef.current?.querySelector<HTMLElement>(`[data-section="${sec.id}"]`);
+    const secEl0 = previewRef.current?.querySelector<HTMLElement>(`[data-section="${sec.id}"]`);
+    const secEl = secEl0?.querySelector<HTMLElement>("[data-decor-band]") ?? secEl0; // stickers are placed in % of their band
     const el = previewRef.current?.querySelector<HTMLElement>(`[data-block="${b.id}"]`);
     let x = 50, y = 50;
     if (secEl && el) {
       const sr = secEl.getBoundingClientRect(), er = el.getBoundingClientRect();
-      x = clamp(((er.left + er.width / 2 - sr.left) / sr.width) * 100);
+      x = isCardSection(sec.id) ? clamp(((er.left + er.width / 2 - sr.left) / sr.width) * 100) : decorXFromPx(er.left + er.width / 2 - sr.left, sr.width, sec.wide);
       y = clamp(((er.top + er.height / 2 - sr.top) / sr.height) * 100);
     }
     const d: Decoration = { id: nextId("d", s.decorations.map((k) => k.id)), section: sec.id, x, y, path: DEFAULT_PATH, layer: "front", ...b.deco };
@@ -460,7 +575,112 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     setSelKind("sticker");
     setStickerPanel(true);
     setFresh({ kind: "sticker", id: d.id, snapshot: JSON.stringify(d) });
-    setLeftOpen(true); // sticker settings live in the left panel
+    if (view !== "card") setLeftOpen(true); // on the card, a sticker only gets its floating panel
+  }
+
+  /** the opening card's section stays (it can be emptied, not deleted) */
+  function askDeleteSection(id: string) {
+    if (!isCardSection(id)) setConfirmDelete(id);
+  }
+
+  /** switch tabs; the card tab starts with its section picked, so its tools and settings are ready */
+  function goView(v: typeof view) {
+    setView(v);
+    if (v === "card") {
+      setSel({ section: CARD_SECTION, block: null });
+      setSelKind("section");
+      setLeftOpen(true);
+    } else if (isCardSection(sel.section)) {
+      setSel({ section: null, block: null });
+      setSelKind(null);
+      setLeftOpen(false);
+    }
+    setSelDecor(null);
+    setMulti([]);
+    setGroupSel(null);
+    setElementPanel(false);
+    setStickerPanel(false);
+    setStickersPanel(false);
+    setCardPanel(null);
+    setRsvpPartKey(null);
+  }
+
+  /** the envelope was clicked on the card tab: its settings float beside it, like an element's */
+  function pickCardPart(part: CardPart) {
+    setSel({ section: CARD_SECTION, block: null });
+    setSelKind("section");
+    setSelDecor(null);
+    setGroupSel(null);
+    setMulti([]);
+    setLeftOpen(true); // the card's section settings stay beside the floating envelope settings
+    setElementPanel(false);
+    setStickerPanel(false);
+    setRsvpPartKey(null);
+    setCardPanel(part);
+  }
+
+  /** move a sticker up or down the stack: stickers are drawn in list order, so it changes places with its peers in the list */
+  function arrangeSticker(id: string, op: ArrangeOp) {
+    setS((prev) => {
+      const list = [...prev.decorations];
+      const d = list.find((x) => x.id === id);
+      if (!d) return prev;
+      const peers = stackPeers(list, d);
+      const i = peers.indexOf(d);
+      const j = op === "front" ? peers.length - 1 : op === "back" ? 0 : op === "forward" ? Math.min(peers.length - 1, i + 1) : Math.max(0, i - 1);
+      if (i === j) return prev;
+      const order = [...peers];
+      order.splice(i, 1);
+      order.splice(j, 0, d);
+      // the peers take back their own places in the list, in the new order
+      list.forEach((x, k) => {
+        if (peers.includes(x)) list[k] = order.shift()!;
+      });
+      return { ...prev, decorations: list };
+    });
+  }
+
+  /** A ready-made card box: a title and some text, boxed together as a group with the "card" design.
+   *  Its look (design, colour, crown, row or column) is set in its group panel, which opens straight away; more elements can be added into it there. */
+  function addCardBox() {
+    const sec = curSection ?? homeSection;
+    if (!sec) return;
+    if (sec.blocks.length + 2 > MAX_BLOCKS) return setMsg({ ok: false, text: "That section is full." });
+    const used = s.sections.flatMap((x) => x.blocks.map((b) => b.id));
+    const mk = (type: BlockType, p: Partial<Block>) => {
+      const id = nextId("b", used);
+      used.push(id);
+      return { ...newBlock(type, id), ...p };
+    };
+    const gid = nextId("g", s.sections.flatMap((x) => x.blocks.map((b) => b.group)));
+    const box = { group: gid, groupDir: "col" as const, groupStyle: "card" as const, groupCrown: "none" as const, groupColor: "" };
+    const items = [mk("heading", { text: "Card title", size: "sm", ...box }), mk("text", { text: "Add the details here — a time, a place, a note for your guests.", tone: "soft", ...box })];
+    // after the picked element (or its group), else at the end of the section
+    const pickedAt = curBlock ? Math.max(...sec.blocks.map((b, i) => (b.id === curBlock.id || (curBlock.group && b.group === curBlock.group) ? i : -1))) + 1 : sec.blocks.length;
+    setS((prev) => ({ ...prev, sections: prev.sections.map((x) => (x.id === sec.id ? { ...x, blocks: [...x.blocks.slice(0, pickedAt), ...items, ...x.blocks.slice(pickedAt)] } : x)) }));
+    setSel({ section: sec.id, block: null });
+    setSelKind("section");
+    setElementPanel(false);
+    setGroupSel(gid);
+    setTimeout(() => document.querySelector(`[data-group="${gid}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+  }
+
+  /** add an element inside a group / card box: it goes at the group's end and takes on the group's look */
+  function addToGroup(gid: string, type: BlockType) {
+    const sec = s.sections.find((x) => x.blocks.some((b) => b.group === gid));
+    if (!sec) return;
+    if (sec.blocks.length >= MAX_BLOCKS) return setMsg({ ok: false, text: "That section is full." });
+    if (type === "rsvp" && s.sections.some((x) => x.blocks.some((b) => b.type === "rsvp"))) return setMsg({ ok: false, text: "The page can only have one RSVP form." });
+    const members = sec.blocks.filter((b) => b.group === gid);
+    const first = members[0];
+    const b: Block = { ...newBlock(type, nextId("b", s.sections.flatMap((x) => x.blocks.map((k) => k.id)))), group: gid, groupDir: first.groupDir, groupStyle: first.groupStyle, groupCrown: first.groupCrown, groupColor: first.groupColor };
+    const at = sec.blocks.indexOf(members[members.length - 1]) + 1;
+    setS((prev) => ({ ...prev, sections: prev.sections.map((x) => (x.id === sec.id ? { ...x, blocks: [...x.blocks.slice(0, at), b, ...x.blocks.slice(at)] } : x)) }));
+    setGroupSel(null);
+    setSel({ section: sec.id, block: b.id });
+    setSelKind("block");
+    setElementPanel(true);
+    setFresh({ kind: "block", id: b.id, snapshot: JSON.stringify(b) });
   }
 
   function deleteSection(id: string) {
@@ -511,8 +731,28 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   const justBoxed = useRef(false);
   function startMarquee(e: React.PointerEvent) {
     const t = e.target as HTMLElement;
+    const offBlock = !!(e.nativeEvent as PointerEvent & { offBlock?: boolean }).offBlock; // pressed beside an element, on its empty row
+    // a sticker set behind all elements is covered by its section: pressing on the section's empty space over it picks it up and drags it
+    if (e.button === 0 && !t.closest("[data-block],[data-action],.decor,[data-keep],input,textarea,select,button,a")) {
+      const under = document
+        .elementsFromPoint(e.clientX, e.clientY)
+        .find((n): n is HTMLElement => n instanceof HTMLElement && !!n.closest("[data-behind] [data-decor]"))
+        ?.closest<HTMLElement>("[data-decor]");
+      const sid = under?.closest<HTMLElement>("[data-section]")?.dataset.section;
+      if (under?.dataset.decor && sid) {
+        e.preventDefault();
+        under.setPointerCapture(e.pointerId); // its layer follows the pointer from here (the same as grabbing it directly)
+        dragging.current = under.dataset.decor;
+        setSelDecor(under.dataset.decor);
+        setSelKind("sticker");
+        setStickerPanel(true);
+        setSel({ section: sid, block: null });
+        setLeftOpen(view !== "card");
+        return;
+      }
+    }
     // touch screens: press and hold an element to start picking; then tap more elements to add or remove them
-    const blockId = t.closest<HTMLElement>("[data-block]")?.dataset.block;
+    const blockId = offBlock ? undefined : t.closest<HTMLElement>("[data-block]")?.dataset.block;
     if (e.pointerType === "touch" && blockId && !t.closest("[data-action]")) {
       const x0 = e.clientX, y0 = e.clientY;
       const timer = setTimeout(() => {
@@ -536,7 +776,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     }
     const secEl = t.closest<HTMLElement>("[data-section]");
     if (e.pointerType === "touch") return; // a finger drag on empty space scrolls the page
-    if (e.button !== 0 || !secEl || t.closest("[data-block],[data-action],.decor,[data-keep],input,textarea,select,button,a")) return;
+    if (e.button !== 0 || !secEl || (!offBlock && t.closest("[data-block]")) || t.closest("[data-action],.decor,[data-keep],input,textarea,select,button,a")) return;
     const x1 = e.clientX, y1 = e.clientY;
     const base = e.shiftKey || e.metaKey || e.ctrlKey ? multi : [];
     let on = false;
@@ -577,8 +817,12 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     e.stopPropagation();
     if (t.closest(".decor:not(.decor-flow), [data-keep]")) return; // stickers and their path handle keep the selection
     setSelDecor(null);
+    setCardPanel(null);
     const section = t.closest<HTMLElement>("[data-section]")?.dataset.section ?? null;
-    const block = t.closest<HTMLElement>("[data-block]")?.dataset.block ?? null;
+    // a click on an element's empty row (beside what it shows) is a click on its section / card box, not on the element
+    // the element that really shows under the pointer (looking through the empty parts of elements' rows), if any
+    const blockEl = blockAtPoint(e.clientX, e.clientY);
+    const block = blockEl?.dataset.block ?? null;
     // shift / ctrl / cmd + click picks several elements to group (while picking, a plain tap does too, for touch screens)
     if (block && (e.shiftKey || e.metaKey || e.ctrlKey || multi.length > 0)) {
       setMulti((m) => {
@@ -588,13 +832,23 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       return;
     }
     setMulti([]);
+    const grp = t.closest<HTMLElement>("[data-group]")?.dataset.group ?? null;
+    if (section && grp && !block) {
+      setGroupSel(grp);
+      setSel({ section, block: null });
+      setSelKind("section");
+      setElementPanel(false);
+      return;
+    }
+    setGroupSel(null);
     const part = (t.closest<HTMLElement>("[data-rsvp-part]")?.dataset.rsvpPart as RsvpPartKey | undefined) ?? null;
     setRsvpPartKey(section && block ? part : null);
     if (section) {
       setSel({ section, block });
       if (block) setElementPanel(!part); // a clicked form piece opens its own panel instead of the whole element's
       setSelKind(block ? "block" : "section");
-      setLeftOpen(true); // a highlighted section opens its settings panel
+      // a highlighted section opens its settings panel; on the card, an element only gets its floating panel (the sidebar is for the card itself)
+      setLeftOpen(!(block && view === "card"));
     } else {
       // clicking the empty canvas clears the selection (hides Edit and the section panel)
       setSel({ section: null, block: null });
@@ -630,7 +884,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   function copySelection() {
     if (selKind === "sticker" && curDecor) clip.current = { kind: "sticker", d: curDecor };
     else if (selKind === "block" && curBlock) clip.current = { kind: "block", block: curBlock };
-    else if (selKind === "section" && curSection) clip.current = { kind: "section", section: curSection, decorations: s.decorations.filter((d) => d.section === curSection.id) };
+    else if (selKind === "section" && curSection && !isCardSection(curSection.id)) clip.current = { kind: "section", section: curSection, decorations: s.decorations.filter((d) => d.section === curSection.id) };
     else return false;
     return true;
   }
@@ -638,7 +892,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   function pasteClipboard() {
     const c = clip.current;
     if (!c) return;
-    const target = curSection ?? s.sections[0];
+    const target = curSection ?? homeSection ?? s.sections[0];
     if (!target && c.kind !== "section") return;
     if (c.kind === "sticker") {
       const { id: _id, ...rest } = c.d;
@@ -664,7 +918,8 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       setElementPanel(true);
       setFresh({ kind: "block", id: copy.id, snapshot: JSON.stringify(copy) });
     } else {
-      if (s.sections.length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
+      if (view === "card") return; // a whole section can't go on the card
+      if (pageSections(s).length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
       const used = s.sections.flatMap((x) => x.blocks.map((b) => b.id));
       const newId = nextId("s", s.sections.map((x) => x.id));
       const blocks = c.section.blocks
@@ -683,7 +938,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       setS((prev) => {
         const list = [...prev.sections];
         const at = curSection ? list.findIndex((x) => x.id === curSection.id) + 1 : list.length;
-        list.splice(at, 0, { ...c.section, id: newId, name: `${c.section.name} copy`, blocks });
+        list.splice(insertAt(list, at), 0, { ...c.section, id: newId, name: `${c.section.name} copy`, blocks });
         return { ...prev, sections: list, decorations: [...prev.decorations, ...decos] };
       });
       setSel({ section: newId, block: null });
@@ -710,12 +965,12 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   function deleteSelection() {
     if (selKind === "sticker" && curDecor) removeStickerAsk(curDecor.id);
     else if (selKind === "block" && curBlock) removeBlockAsk(curBlock.id);
-    else if (selKind === "section" && curSection) setConfirmDelete(curSection.id);
+    else if (selKind === "section" && curSection) askDeleteSection(curSection.id);
   }
 
   function nudge(dx: number, dy: number) {
     if (selKind === "sticker" && curDecor) {
-      setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === curDecor.id ? { ...d, x: clamp(d.x + dx), y: clamp(d.y + dy) } : d)) }));
+      setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => { if (d.id !== curDecor.id) return d; const v = phoneMode ? phoneDecor(d) : d; return patchDecor(d, { x: clamp(v.x + dx), y: clamp(v.y + dy) }); }) }));
     } else if (selKind === "block" && curBlock && curSection) {
       const i = curSection.blocks.findIndex((b) => b.id === curBlock.id);
       const j = i + (dy < 0 ? -1 : 1);
@@ -735,7 +990,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
       if (k === "escape") setPreviewing(false);
       return;
     }
-    if (view !== "edit") return;
+    if (view === "rsvps") return;
     const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable='true'], [role='dialog'], [role='alertdialog']");
     if (typing) return; // leave native text editing (and dialogs) alone
     if (mod && k === "z") {
@@ -788,12 +1043,31 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     return () => window.removeEventListener("keydown", f);
   }, []);
 
-  const stickerInfo = selKind === "sticker" && curDecor ? { section: curDecor.section, flip: curDecor.flip, rotate: curDecor.rotate, size: curDecor.size } : null;
+  const stickerView = curDecor && phoneMode ? phoneDecor(curDecor) : curDecor;
+  const stickerInfo = selKind === "sticker" && stickerView ? { section: stickerView.section, flip: stickerView.flip, rotate: stickerView.rotate, size: stickerView.size } : null;
   const display = applyName(s);
+  /** what the canvas draws: in Phone mode, the phone layout (each element / sticker at its phone place and size) */
+  const canvas = phoneMode ? phoneSettings(display) : display;
+
+
+  // phone view: send the design to the phone frame whenever it changes (and when the frame says it is ready)
+  useEffect(() => {
+    if (!phone) return;
+    const send = () => phoneFrame.current?.contentWindow?.postMessage({ type: "rsvibe-phone", s: display }, window.location.origin);
+    const t = setTimeout(send, 120); // typing: send once it settles
+    const onReady = (e: MessageEvent) => {
+      if (e.origin === window.location.origin && e.source === phoneFrame.current?.contentWindow && e.data?.type === "rsvibe-phone-ready") send();
+    };
+    window.addEventListener("message", onReady);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("message", onReady);
+    };
+  }, [phone, display, phoneKey]);
 
   const layer = (id: string) => (
     <DragLayer
-      items={display.decorations.filter((d) => d.section === id)}
+      items={canvas.decorations.filter((d) => d.section === id)}
       selected={selDecor}
       onPathEnd={(did, x, y) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? { ...d, path: { ...d.path, x, y } } : d)) }))}
       onSelect={(did) => {
@@ -801,22 +1075,24 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
         setSelKind("sticker");
         setStickerPanel(true);
         setSel({ section: id, block: null });
-        setLeftOpen(true);
+        setLeftOpen(view !== "card");
       }}
-      onChange={(did, patch) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? { ...d, ...patch } : d)) }))}
+      onChange={(did, patch) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? patchDecor(d, patch) : d)) }))}
       onRemove={removeStickerAsk}
-      onMove={(did, x, y) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? { ...d, x, y } : d)) }))}
+      onMove={(did, x, y) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? patchDecor(d, { x, y }) : d)) }))}
       draggingRef={dragging}
+      playing={enterPlay}
+      wide={isCardSection(id) ? undefined : !!s.sections.find((x) => x.id === id)?.wide}
     />
   );
 
   const hasRsvp = s.sections.some((x) => x.blocks.some((b) => b.type === "rsvp"));
   const stickersFull = s.decorations.length >= MAX_DECORATIONS;
-  const target = curSection ?? s.sections[0];
+  const target = curSection ?? homeSection;
 
   /** a ready-made section: heading, short text and a map */
   function addMapSection() {
-    if (s.sections.length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
+    if (pageSections(s).length >= MAX_SECTIONS) return setMsg({ ok: false, text: "Too many sections." });
     const sid = nextId("s", s.sections.map((x) => x.id));
     const used = s.sections.flatMap((x) => x.blocks.map((b) => b.id));
     const mk = (type: BlockType, patch: Partial<Block>) => {
@@ -842,7 +1118,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     };
     setS((prev) => {
       const list = [...prev.sections];
-      list.splice(curSection ? list.findIndex((x) => x.id === curSection.id) + 1 : list.length, 0, sec);
+      list.splice(insertAt(list, curSection ? list.findIndex((x) => x.id === curSection.id) + 1 : list.length), 0, sec);
       return { ...prev, sections: list };
     });
     setSel({ section: sid, block: map.id });
@@ -931,7 +1207,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
   // Event & theme, Preview and Save: in the header, or (phones, edit view) floating above the "Content" bar
   const actionButtons = (parts: ("theme" | "view")[], compact = false, slot = "header") => (
     <>
-      {parts.includes("theme") && view === "edit" && (
+      {parts.includes("theme") && view !== "rsvps" && (
         <Popover
           transition="blur"
           transitionDelay={60}
@@ -957,9 +1233,22 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
         </Popover>
       )}
       {parts.includes("theme") && view === "edit" && (
-        <Tooltip content="Opening card" position="bottom" classNames={{ bubble: compact ? "" : "hidden" }}>
-          <Button size="sm" shape="pill" aria-label="Opening card" className={`font-semibold shadow-sm ${compact ? "px-2" : "max-sm:px-2.5 max-sm:text-xs"}`} onClick={() => setView("card")}>
-            <MailOpen size={15} className={compact ? "" : "mr-1"} /> <span className={compact ? "hidden" : ""}>Opening card</span>
+        <Tooltip content="Edit Card" position="bottom" classNames={{ bubble: compact ? "" : "hidden" }}>
+          <Button size="sm" shape="pill" aria-label="Edit Card" className={`font-semibold shadow-sm ${compact ? "px-2" : "max-sm:px-2.5 max-sm:text-xs"}`} onClick={() => goView("card")}>
+            <MailOpen size={15} className={compact ? "" : "mr-1"} /> <span className={compact ? "hidden" : ""}>Edit Card</span>
+          </Button>
+        </Tooltip>
+      )}
+      {parts.includes("view") && view !== "rsvps" && !previewing && (
+        <ButtonGroup shape="pill">
+          <SegmentButton active={!phoneMode} icon="monitor" onClick={() => setDevice("desktop")}>{compact ? "" : "Desktop"}</SegmentButton>
+          <SegmentButton active={phoneMode} icon="smartphone" onClick={() => setDevice("phone")}>{compact ? "" : "Phone"}</SegmentButton>
+        </ButtonGroup>
+      )}
+      {parts.includes("view") && view !== "rsvps" && !previewing && (
+        <Tooltip content={phone ? "Close the phone view" : "Phone view — see the page as it looks on a phone, while you edit"} position="bottom" classNames={{ bubble: compact ? "" : "hidden" }}>
+          <Button size="sm" shape="pill" variant={phone ? "solid" : undefined} aria-pressed={phone} aria-label="Phone view" className={`font-semibold shadow-sm ${compact ? "px-2" : "max-sm:px-2.5 max-sm:text-xs"}`} onClick={() => setPhone((p) => !p)}>
+            <Smartphone size={15} className={compact ? "" : "mr-1"} /> <span className={compact ? "hidden" : ""}>{phone ? "Close phone" : "Phone view"}</span>
           </Button>
         </Tooltip>
       )}
@@ -969,13 +1258,13 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     </>
   );
 
-  const layerSection = curSection ?? s.sections[0];
+  const layerSection = curSection ?? homeSection;
   const confirmSection = s.sections.find((x) => x.id === confirmDelete);
 
   return (
     <>
       <div className="flex h-screen flex-col overflow-hidden bg-surface-muted text-fg">
-        <header ref={headerRef} className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2 text-xs sm:gap-3 sm:px-5 sm:py-3">
+        <header className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2 text-xs sm:gap-3 sm:px-5 sm:py-3">
           <Link
             href={`/event/${eventId}`}
             title="Back to the event"
@@ -989,18 +1278,18 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
             <span className="font-normal text-soft max-sm:hidden">· Design</span>
           </Link>
           <ButtonGroup shape="pill">
-            <SegmentButton active={view === "edit"} icon="palette" onClick={() => setView("edit")}>Edit page</SegmentButton>
-            <SegmentButton active={view === "card"} icon="mail-open" onClick={() => setView("card")}>Opening card</SegmentButton>
-            <SegmentButton active={view === "rsvps"} icon="users" onClick={() => setView("rsvps")}>RSVPs</SegmentButton>
+            <SegmentButton active={view === "edit"} icon="palette" onClick={() => goView("edit")}>Edit page</SegmentButton>
+            <SegmentButton active={view === "card"} icon="mail-open" onClick={() => goView("card")}>Edit Card</SegmentButton>
+            <SegmentButton active={view === "rsvps"} icon="users" onClick={() => goView("rsvps")}>RSVPs</SegmentButton>
           </ButtonGroup>
           {/* phones: on the first row, at the right end, level with the RSVPs tab */}
           <UserMenu transition="blur" transitionDelay={60} className="ml-auto sm:hidden" name={account.name} email={account.email} avatarSrc={account.imageUrl || undefined} avatarInitials={(account.name || account.email)[0].toUpperCase()} items={[{ label: "Log out", danger: true }]} onItemSelect={() => logout()} />
           <div className="flex items-center gap-2 max-sm:w-full max-sm:justify-end sm:ml-auto">
             <Tooltip content="Undo (Ctrl/⌘ Z)" position="bottom" className="max-sm:hidden">
-              <Button variant="ghost" size="sm" className="px-2" aria-label="Undo" disabled={hist.past === 0 || view !== "edit"} onClick={undo}><Undo2 size={16} /></Button>
+              <Button variant="ghost" size="sm" className="px-2" aria-label="Undo" disabled={hist.past === 0 || view === "rsvps"} onClick={undo}><Undo2 size={16} /></Button>
             </Tooltip>
             <Tooltip content="Redo (Ctrl/⌘ Shift Z)" position="bottom" className="max-sm:hidden">
-              <Button variant="ghost" size="sm" className="px-2" aria-label="Redo" disabled={hist.future === 0 || view !== "edit"} onClick={redo}><Redo2 size={16} /></Button>
+              <Button variant="ghost" size="sm" className="px-2" aria-label="Redo" disabled={hist.future === 0 || view === "rsvps"} onClick={redo}><Redo2 size={16} /></Button>
             </Tooltip>
             <Tooltip content="Keyboard shortcuts (?)" position="bottom" className="max-sm:hidden">
               <Button variant="ghost" size="sm" className="px-2" aria-label="Keyboard shortcuts" onClick={() => setHelpOpen(true)}><Keyboard size={16} /></Button>
@@ -1009,40 +1298,12 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
             <UserMenu transition="blur" transitionDelay={60} className="max-sm:hidden" name={account.name} email={account.email} avatarSrc={account.imageUrl || undefined} avatarInitials={(account.name || account.email)[0].toUpperCase()} items={[{ label: "Log out", danger: true }]} onItemSelect={() => logout()} />
           </div>
           {/* own row below lg: Event & theme and Preview on the left, Save on the right */}
-          <div className={`flex w-full items-center justify-between gap-2 ${previewing ? "hidden" : view === "edit" ? "lg:hidden" : ""}`}>
+          <div className={`flex w-full items-center justify-between gap-2 ${previewing ? "hidden" : view !== "rsvps" ? "lg:hidden" : ""}`}>
             <div className="flex flex-wrap items-center gap-2">{actionButtons(["theme", "view"])}</div>
           </div>
         </header>
 
-        {view === "card" ? (
-          <div className="flex-1 overflow-auto bg-surface-muted p-4 sm:p-6">
-            <div className="mx-auto grid max-w-6xl items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
-              <div className="relative">
-                <ThemeProvider isolated mode={s.theme.mode} accent={s.theme.accent} design={s.theme.design}>
-                  <div data-font={s.theme.font} className={`text-fg ${s.page.intro.on ? "" : "opacity-40 saturate-50"}`}>
-                    <EnvelopeIntro
-                      key={cardPlay}
-                      intro={s.page.intro}
-                      edit={{ autoplay: cardPlay > 0, onChange: (p) => setS((prev) => ({ ...prev, page: { ...prev.page, intro: { ...prev.page.intro, ...p } } })) }}
-                    />
-                  </div>
-                </ThemeProvider>
-                {!s.page.intro.on && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-2xl bg-surface/60 text-center backdrop-blur-[1px]">
-                    <p className="text-sm font-semibold">The opening card is off — guests go straight to your page.</p>
-                    <Button size="sm" shape="pill" className="font-semibold" onClick={() => setS((prev) => ({ ...prev, page: { ...prev.page, intro: { ...prev.page.intro, on: true } } }))}>Turn it on</Button>
-                  </div>
-                )}
-                <p className="mt-2 text-center text-xs text-soft">Click any text to change it. Tap the envelope to see it open.</p>
-              </div>
-              <Card variant="elevated" padding="lg" className="grid gap-4">
-                <h2 className="text-sm font-bold uppercase tracking-wide text-soft">Opening card</h2>
-                <CardTool s={s} setS={setS} onTry={() => setCardPlay((n) => n + 1)} />
-                <SaveButton dirty={dirty} saving={saving} onClick={save} />
-              </Card>
-            </div>
-          </div>
-        ) : view === "rsvps" ? (
+        {view === "rsvps" ? (
           <div className="flex-1 overflow-auto p-6">
             <div className="mx-auto max-w-4xl">
               <Card variant="elevated" padding="lg">
@@ -1051,7 +1312,8 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
             </div>
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          // large screens: the canvas is the whole window width (as wide as the preview / a visitor's screen), and the side panels float over it
+          <div className="relative flex min-h-0 flex-1 flex-col lg:block">
             <AnimatePresence initial={false}>
               {leftOpen && curSection && (
                 <motion.aside
@@ -1060,11 +1322,13 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
                   animate={{ width: isLg ? 290 : "100%", height: "auto", opacity: 1 }}
                   exit={{ width: isLg ? 0 : "100%", height: isLg ? "auto" : 0, opacity: 0 }}
                   transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
-                  className="max-h-[45vh] shrink-0 overflow-hidden border-b border-border bg-surface lg:max-h-none lg:border-b-0 lg:border-r"
+                  style={floatStyle("settings", "left")}
+                  className="max-h-[45vh] shrink-0 overflow-hidden border-b border-border bg-surface lg:absolute lg:z-[76] lg:flex lg:flex-col lg:rounded-2xl lg:border lg:shadow-2xl"
                 >
-                    <div className="h-full w-full overflow-auto lg:w-[290px]">
-                      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-surface/95 px-4 py-3.5 backdrop-blur">
+                    <div className="h-full w-full overflow-auto lg:h-auto lg:min-h-0 lg:w-[290px]">
+                      <div onPointerDown={startPanelDrag("settings", "left")}title={isLg ? "Drag to move" : undefined} className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-surface/95 px-4 py-3.5 backdrop-blur lg:cursor-move lg:select-none lg:touch-none">
                         <div className="flex min-w-0 items-center gap-3">
+                          <GripVertical size={14} className="-mx-2 hidden shrink-0 text-soft lg:block" aria-hidden />
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-fg text-surface shadow-sm">
                             <Layers size={17} />
                           </span>
@@ -1095,7 +1359,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
                         <div className={`min-h-0 overflow-hidden transition-[visibility] duration-300 ${settingsOpen ? "" : "max-lg:invisible"}`}>
                           <div className="grid gap-6 p-4">
                             <div id="left-section" className="scroll-mt-16">
-                              <SectionEditor sec={curSection} set={(p) => updateSection(curSection.id, p)} remove={() => setConfirmDelete(curSection.id)} />
+                              <SectionEditor sec={curSection} set={(p) => updateSection(curSection.id, p)} remove={isCardSection(curSection.id) ? undefined : () => askDeleteSection(curSection.id)} />
                             </div>
                           </div>
                         </div>
@@ -1106,8 +1370,21 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
             </AnimatePresence>
               <div
                 ref={previewRef}
-                className="min-h-0 min-w-0 flex-1 overflow-auto bg-surface-muted p-6 lg:pt-2"
+                className="min-h-0 min-w-0 flex-1 overflow-auto bg-surface-muted p-6 lg:absolute lg:inset-0 lg:p-0"
                 onPointerDown={startMarquee}
+                onPointerMove={(e) => {
+                  // the grab hand and the light hover frame: only over an element itself, whichever row lies on top
+                  if (e.buttons) return;
+                  const b = blockAtPoint(e.clientX, e.clientY);
+                  if (b === hotBlock.current) return;
+                  if (hotBlock.current) hotBlock.current.dataset.hot = "";
+                  if (b) b.dataset.hot = "1";
+                  hotBlock.current = b;
+                }}
+                onPointerLeave={() => {
+                  if (hotBlock.current) hotBlock.current.dataset.hot = "";
+                  hotBlock.current = null;
+                }}
                 onClickCapture={onPreviewClick}
                 onSubmitCapture={(e) => {
                   e.preventDefault();
@@ -1116,12 +1393,37 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
               >
                 {/* large screens: an oval bar of page actions above the page */}
                 <div data-action className="fx-invert sticky top-0 z-[60] mb-3 mx-auto hidden max-w-[1100px] justify-between lg:flex">
-                  <div className="flex items-center gap-2 rounded-full border border-border bg-surface px-2.5 py-1.5 shadow-md">{actionButtons(["theme", "view"], false, "bar")}</div>
+                  <div className="flex items-center gap-2 rounded-full border border-border bg-surface px-2.5 py-1.5 shadow-md">
+                    {actionButtons(["theme", "view"], false, "bar")}
+                    {/* the right-hand panels float over the canvas: hide them to see and reach the design's right edge */}
+                    <Tooltip content={panelsHidden ? "Show the Content list and Toolbox" : "Hide the Content list and Toolbox (see the whole page)"} position="bottom">
+                      <Button size="sm" shape="pill" variant="outline" icon={panelsHidden ? "panel-right-open" : "panel-right-close"} className="font-semibold" onClick={() => setPanelsHidden((h) => !h)}>{panelsHidden ? "Show panels" : "Hide panels"}</Button>
+                    </Tooltip>
+                    {panelsHidden && <SaveButton dirty={dirty} saving={saving} onClick={save} />}
+                  </div>
                 </div>
                 {/* only this preview takes the site theme — the admin UI itself stays as it is */}
                 <ThemeProvider isolated mode={s.theme.mode} accent={s.theme.accent} design={s.theme.design}>
-                  <div data-font={s.theme.font} className={`editing ${sel.section ? "has-selection" : ""} page-bg mx-auto max-w-[1100px] overflow-x-clip rounded-2xl pt-1 text-fg ring-1 ring-border`}>
-                    <PageView s={display} edit={{ selected: sel, multi, layer, actions, sticker: stickerInfo, illoHandles: (b) => (b.deco ? stickerHandles({ id: b.id, section: "", x: 50, y: 50, path: DEFAULT_PATH, layer: "front", ...b.deco }, (_, patch) => updateBlock(b.id, { deco: { ...b.deco!, ...(patch as Partial<NonNullable<Block["deco"]>>) } }), () => removeBlockAsk(b.id)) : null) }} />
+                  {phoneMode && (
+                    <div data-action className="mx-auto mb-3 flex max-w-[438px] items-center gap-2 rounded-2xl bg-[#2563eb] px-3 py-2 text-xs font-semibold text-white shadow">
+                      <Smartphone size={15} className="shrink-0" />
+                      <span>Phone layout (390px). Moving, resizing and turning things here changes phones only; words and looks are shared.</span>
+                    </div>
+                  )}
+                  {view === "card" && (
+                    <div data-action className="mx-auto mb-3 flex max-w-[760px] items-center justify-center gap-2 pl-12">
+                      <Button size="sm" shape="pill" icon="play" className="font-semibold shadow-sm" onClick={() => setCardPlay((n) => n + 1)}>Play the opening</Button>
+                      <span className="text-xs text-soft">Click any part of the card to change it.</span>
+                    </div>
+                  )}
+                  {view === "card" && !s.page.intro.on && (
+                    <div data-action className="mx-auto mb-3 flex max-w-[1100px] flex-wrap items-center justify-center gap-3 rounded-2xl border border-border bg-surface px-4 py-3 text-center text-fg">
+                      <p className="text-sm font-semibold">The opening card is off — guests go straight to your page.</p>
+                      <Button size="sm" shape="pill" className="font-semibold" onClick={() => setS((prev) => ({ ...prev, page: { ...prev.page, intro: { ...prev.page.intro, on: true } } }))}>Turn it on</Button>
+                    </div>
+                  )}
+                  <div data-font={s.theme.font} className={`editing ${sel.section ? "has-selection" : ""} ${view === "card" ? `mx-auto ${phoneMode ? "max-w-[438px]" : "max-w-[816px]" /* a 768px (48rem) page: the card's large-screen look */} pt-1 text-fg ${s.page.intro.on ? "" : "opacity-60 saturate-50"}` : `page-bg mx-auto ${phoneMode ? "max-w-[390px]" : "max-w-none"} overflow-x-clip rounded-2xl pt-1 text-fg ring-1 ring-border`}`}>
+                    <PageView key={view === "card" ? `card-${cardPlay}` : "page"} s={canvas} card={view === "card" ? { autoplay: cardPlay > 0, onPick: pickCardPart, peek: cardPanel === "letter", onChange: (p) => setS((prev) => ({ ...prev, page: { ...prev.page, intro: { ...prev.page.intro, ...p } } })) } : undefined} edit={{ selected: sel, group: groupSel, multi, layer, actions, phone: phoneMode, desktop: phoneMode ? display : undefined, sticker: stickerInfo, illoHandles: (b) => (b.deco && !phoneMode /* its size and turn are shared; on phones use "Size on phones" */ ? stickerHandles({ id: b.id, section: "", x: 50, y: 50, path: DEFAULT_PATH, layer: "front", ...b.deco }, (_, patch) => updateBlock(b.id, { deco: { ...b.deco!, ...(patch as Partial<NonNullable<Block["deco"]>>) } }), () => removeBlockAsk(b.id)) : null) }} />
                   </div>
                 </ThemeProvider>
                 {marquee && <i aria-hidden className="pointer-events-none fixed z-[90] rounded-md border-2 border-brand bg-brand/15" style={{ left: marquee.x1, top: marquee.y1, width: marquee.x2 - marquee.x1, height: marquee.y2 - marquee.y1 }} />}
@@ -1139,8 +1441,9 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
               </div>
 
             {/* always-visible list of everything added to the selected section */}
-            <aside className="max-h-56 w-full shrink-0 overflow-y-auto overscroll-contain border-t border-border bg-surface lg:max-h-none lg:w-[clamp(176px,14vw,300px)] lg:border-l lg:border-t-0">
-              <div className={`sticky top-0 z-10 flex h-14 w-full shrink-0 items-center gap-2 bg-surface/95 px-3 backdrop-blur lg:h-[65px] ${addedOpen ? "border-b border-border" : "max-lg:border-b-0"} lg:border-b lg:border-border`}>
+            <aside style={floatStyle("content", "right")} className={`max-h-56 w-full shrink-0 overflow-y-auto overscroll-contain border-t border-border bg-surface lg:absolute lg:z-[75] lg:w-[clamp(176px,14vw,300px)] lg:rounded-2xl lg:border lg:shadow-2xl ${panelsHidden ? "lg:hidden" : ""}`}>
+              <div onPointerDown={startPanelDrag("content", "right")} title={isLg ? "Drag to move" : undefined} className={`sticky top-0 z-10 flex h-14 w-full shrink-0 items-center gap-2 bg-surface/95 px-3 backdrop-blur lg:h-[65px] lg:cursor-move lg:select-none lg:touch-none ${addedOpen ? "border-b border-border" : "max-lg:border-b-0"} lg:border-b lg:border-border`}>
+                <GripVertical size={14} className="-mx-1.5 hidden shrink-0 text-soft lg:block" aria-hidden />
                 <SaveButton dirty={dirty} saving={saving} onClick={save} />
                 <button type="button" aria-expanded={addedOpen} aria-label="Show or hide what is in this section" onClick={() => setAddedOpen((o) => !o)} className="flex shrink-0 items-center gap-2 rounded-full p-1 lg:hidden">
                   {layerSection && <Badge variant="soft" size="xs" color="blue">{layerSection.blocks.length + s.decorations.filter((d) => d.section === layerSection.id).length}</Badge>}
@@ -1186,8 +1489,8 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
             </aside>
 
             {/* the toolbox is a permanent icon strip: click or drag a tool; settings open in floating panels */}
-            <aside className="max-h-24 w-full shrink-0 overflow-hidden border-t border-border bg-surface lg:max-h-none lg:flex lg:w-[84px] lg:flex-col lg:border-l lg:border-t-0">
-              <div className="hidden h-[65px] shrink-0 flex-col items-center justify-center gap-1.5 border-b border-border bg-gradient-to-b from-surface-muted to-surface px-2 lg:flex">
+            <aside style={floatStyle("toolbox", "right")} className={`max-h-24 w-full shrink-0 overflow-hidden border-t border-border bg-surface lg:absolute lg:z-[75] lg:flex lg:w-[84px] lg:flex-col lg:rounded-2xl lg:border lg:shadow-2xl ${panelsHidden ? "lg:hidden" : ""}`}>
+              <div onPointerDown={startPanelDrag("toolbox", "right")} title="Drag to move" className="hidden h-[65px] shrink-0 cursor-move select-none touch-none flex-col items-center justify-center gap-1.5 border-b border-border bg-gradient-to-b from-surface-muted to-surface px-2 lg:flex">
                 <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-fg text-surface shadow-sm"><Wrench size={12} /></span>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-fg">Toolbox</p>
               </div>
@@ -1202,16 +1505,48 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
                 ))}
                 <span aria-hidden className="mx-1 h-6 w-px shrink-0 bg-border lg:mx-0 lg:my-1 lg:h-px lg:w-6" />
                 {stripButton("Text stickers", Sparkles, () => setStickersPanel((o) => !o), stickersPanel)}
-                {stripButton("New section", Plus, () => actions.addSection(curSection ? s.sections.indexOf(curSection) + 1 : s.sections.length))}
-                {stripButton("New map", MapPin, addMapSection)}
+                {stripButton("Card box", SquareStack, addCardBox)}
+                {view !== "card" && stripButton("New section", Plus, () => actions.addSection(curSection ? s.sections.indexOf(curSection) + 1 : pageSections(s).length))}
+                {view !== "card" && stripButton("New map", MapPin, addMapSection)}
               </div>
             </aside>
           </div>
         )}
 
+        <AnimatePresence>
+        {phone && !previewing && view !== "rsvps" && (() => {
+          // a 390 x 844 phone screen, shown smaller so it fits beside the editor
+          const k = Math.min(0.8, Math.max(0.45, ((typeof window === "undefined" ? 900 : window.innerHeight) * 0.75 - 110) / 844));
+          return (
+            <FloatingPanel key="phone" panelId="phone" title="Phone view" width={Math.round(390 * k) + 34} onClose={() => setPhone(false)} onDone={() => setPhone(false)}>
+              <div className="grid justify-items-center gap-2">
+                <div className="rounded-[2.2rem] bg-zinc-900 p-2.5 shadow-xl ring-1 ring-black/20">
+                  <div className="relative overflow-hidden rounded-[1.7rem] bg-white" style={{ width: 390 * k, height: 844 * k }}>
+                    <iframe
+                      key={phoneKey}
+                      ref={phoneFrame}
+                      src="/phone-preview"
+                      title="The page on a phone"
+                      className="absolute left-0 top-0 origin-top-left border-0"
+                      style={{ width: 390, height: 844, transform: `scale(${k})` }}
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="xs" shape="pill" variant="outline" icon="rotate-ccw" onClick={() => setPhoneKey((n) => n + 1)}>Start again</Button>
+                  <span className="text-[11px] text-soft">390 × 844 · updates as you edit</span>
+                </div>
+              </div>
+            </FloatingPanel>
+          );
+        })()}
+        </AnimatePresence>
+
         {previewing && (
-          <div className="fixed inset-x-0 bottom-0 z-50 overflow-auto bg-surface-muted" style={{ top: headerH }}>
-            <div className="pointer-events-none sticky top-0 z-[60] flex justify-center px-4 pt-3">
+          // the whole screen, exactly as visitors get it (full height and width; the editor's header is out of the way)
+          <div className="fixed inset-0 z-[120] overflow-auto bg-surface-muted">
+            {/* floating over the page, taking no room in it */}
+            <div className="pointer-events-none fixed inset-x-0 top-3 z-[130] flex items-center justify-center gap-2 px-4">
               <span className="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-accent-700 via-accent-600 to-accent-400 py-1.5 pl-3 pr-4 text-[11px] font-bold uppercase tracking-[0.22em] text-white shadow-lg shadow-accent-600/30 ring-1 ring-inset ring-white/30">
                 <span className="relative flex h-2 w-2">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/70" />
@@ -1220,6 +1555,9 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
                 <Eye size={13} strokeWidth={2.25} />
                 Preview
               </span>
+              <Button size="sm" shape="pill" icon="pencil" className="pointer-events-auto font-semibold shadow-lg" onClick={() => setPreviewing(false)}>
+                Back to editor
+              </Button>
             </div>
             <ThemeProvider isolated mode={s.theme.mode} accent={s.theme.accent} design={s.theme.design}>
               <div
@@ -1230,21 +1568,37 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
                   e.stopPropagation();
                 }}
               >
-                <PageView s={display} introTop={headerH} />
+                <PageView s={display} introTop={0} />
               </div>
             </ThemeProvider>
           </div>
         )}
 
-        {stickerPanel && selKind === "sticker" && curDecor && !previewing && <Connector panel="sticker" selector={`[data-decor="${curDecor.id}"]`} />}
+        {stickerPanel && selKind === "sticker" && curDecor && !previewing && <Connector panel="sticker" selector={[`[data-decor="${curDecor.id}"] [data-fit-frame]`, `[data-decor="${curDecor.id}"]`]} />}
         <AnimatePresence>
         {stickerPanel && selKind === "sticker" && curDecor && !previewing && (
           <FloatingPanel key="sticker" panelId="sticker" title={`Edit ${KIND_LABEL[curDecor.kind].toLowerCase()}`} onClose={() => closeStickerPanel(true)} onDone={() => closeStickerPanel(false)} closeHint={justAddedSticker && untouched(curDecor) ? "Cancel — removes the sticker you just added" : "Close"}>
             <StickerEditor
-              cur={curDecor}
+              cur={phoneMode ? phoneDecor(curDecor) : curDecor}
+              phone={phoneMode}
+              onPlayEnter={() => setEnterPlay((p) => ({ id: curDecor.id, n: (p?.n ?? 0) + 1 }))}
+              arrange={(() => {
+                const peers = stackPeers(s.decorations, curDecor);
+                return { at: peers.indexOf(curDecor) + 1, of: peers.length, move: (op: ArrangeOp) => arrangeSticker(curDecor.id, op) };
+              })()}
               onPosition={() => stickerToLayout(curDecor)}
-              update={(patch) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === curDecor.id ? { ...d, ...patch } : d)) }))}
+              update={(patch) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === curDecor.id ? patchDecor(d, patch) : d)) }))}
+              onResetPhone={() => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === curDecor.id ? { ...d, m: undefined } : d)) }))}
             />
+          </FloatingPanel>
+        )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+        {cardPanel && view === "card" && !previewing && <Connector key={`card-line-${cardPanel}`} panel="card" selector={`[data-card-part="${cardPanel}"]`} />}
+        {cardPanel && view === "card" && !previewing && (
+          <FloatingPanel key="card" panelId="card" title={CARD_PART_TITLE[cardPanel]} onClose={() => setCardPanel(null)} onDone={() => setCardPanel(null)}>
+            <CardTool s={s} setS={setS} part={cardPanel} onTry={() => setCardPlay((n) => n + 1)} onLetter={() => setCardPanel("letter")} />
           </FloatingPanel>
         )}
         </AnimatePresence>
@@ -1253,7 +1607,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
         {stickersPanel && !previewing && (
           <FloatingPanel key="stickers" panelId="stickers" title="Text stickers" onClose={() => setStickersPanel(false)} onDone={() => setStickersPanel(false)}>
             <DecorTools
-              section={(curSection ?? s.sections[0])?.id ?? ""}
+              section={layerSection?.id ?? ""}
               s={s}
               setS={setS}
               sel={selDecor}
@@ -1270,7 +1624,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
         )}
         </AnimatePresence>
 
-        {elementPanel && curBlock && !previewing && <Connector panel="element" selector={`[data-block="${curBlock.id}"]`} />}
+        {elementPanel && curBlock && !previewing && <Connector panel="element" selector={[`[data-block="${curBlock.id}"] [data-fit-frame]`, `[data-block="${curBlock.id}"] > .block-ring`, `[data-block="${curBlock.id}"]`]} />}
         <AnimatePresence>
         {rsvpPartKey && curBlock?.type === "rsvp" && !previewing && (
           <FloatingPanel key="rsvppart" panelId="rsvppart" title={`Form piece: ${RSVP_PART_META[rsvpPartKey].label}`} onClose={() => setRsvpPartKey(null)} onDone={() => setRsvpPartKey(null)}>
@@ -1284,9 +1638,56 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
         <AnimatePresence>
         {elementPanel && curBlock && !previewing && (
           <FloatingPanel key="element" panelId="element" title={`Element: ${PALETTE.find((p) => p.type === curBlock.type)?.label ?? curBlock.type}`} onClose={() => closeElementPanel(true)} onDone={() => closeElementPanel(false)} closeHint={justAddedBlock && untouched(curBlock) ? "Cancel — removes the element you just added" : "Close"}>
-            <BlockEditor b={curBlock} onToFixed={() => illustrationToFixed(curBlock)} set={(p) => updateBlock(curBlock.id, p)} remove={() => removeBlockAsk(curBlock.id)} setMsg={setMsg} onEditPart={(k) => { setRsvpPartKey(k); }} />
+            <BlockEditor b={curBlock} onSelectGroup={() => setGroupSel(curBlock.group) /* its own panel, beside this one */} setGroup={(p) => updateGroupDev(curBlock.group, p)} phone={phoneMode} onResetPhone={() => updateBlock(curBlock.id, { m: undefined })} onToFixed={() => illustrationToFixed(curBlock)} set={(p) => updateBlock(curBlock.id, p)} remove={() => removeBlockAsk(curBlock.id)} setMsg={setMsg} onEditPart={(k) => { setRsvpPartKey(k); }} />
           </FloatingPanel>
         )}
+        </AnimatePresence>
+
+        {/* the blue line from the card box's floating panel to the box itself */}
+        {groupSel && !previewing && <Connector panel="group" selector={`.editing [data-group="${groupSel}"]`} />}
+        <AnimatePresence>
+        {groupSel && !previewing && (() => {
+          const members = s.sections.flatMap((x) => x.blocks).filter((b) => b.group === groupSel);
+          if (!members.length) return null;
+          const first = members[0];
+          return (
+            <FloatingPanel key="group" panelId="group" title={`${first.groupStyle === "none" ? "Group" : "Card box"} (${members.length} elements)`} onClose={() => setGroupSel(null)} onDone={() => setGroupSel(null)}>
+              <div className="grid gap-3">
+                <div className="grid gap-1.5">
+                  <p className="text-xs font-bold uppercase tracking-wide text-soft">Add inside</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PALETTE.filter((p) => !["rsvp", "map", "gallery", "countdown", "spacer"].includes(p.type)).map((p) => (
+                      <button key={p.type} type="button" title={p.label} aria-label={`Add ${p.label} inside`} onClick={() => addToGroup(groupSel, p.type)} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium hover:border-fg/40 hover:bg-surface-muted">
+                        <p.Icon size={14} className={TOOL_TONE[p.type]} />
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <GroupFields first={phoneMode ? phoneBlock(first) : first} update={(p) => updateGroupDev(groupSel, p)} />
+                <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+                  <Button variant="outline" size="sm"  onClick={() => { actions.groupBlocks(members.map((m) => m.id), "none"); setGroupSel(null); }}>Ungroup</Button>
+                  <Button
+                    variant="destructive-outline"
+                    size="sm"
+                    icon="trash-2"
+                    onClick={() => {
+                      // the box and everything in it go (Undo brings them back); their uploaded pictures leave storage when the design is saved
+                      const ids = new Set(members.map((m) => m.id));
+                      setS((prev) => ({ ...prev, sections: prev.sections.map((x) => ({ ...x, blocks: x.blocks.filter((b) => !ids.has(b.id)) })) }));
+                      setGroupSel(null);
+                      setSel((p) => ({ ...p, block: null }));
+                      setElementPanel(false);
+                      setMsg({ ok: true, text: "Card box removed. Undo (Ctrl/⌘ Z) brings it back." });
+                    }}
+                  >
+                    Remove {first.groupStyle === "none" ? "group" : "card box"}
+                  </Button>
+                </div>
+              </div>
+            </FloatingPanel>
+          );
+        })()}
         </AnimatePresence>
 
         <SaveToast msg={msg} onClose={() => setMsg(null)} />
@@ -1455,6 +1856,12 @@ function ThemeTool({ s, setS, onPickType }: { s: Settings; setS: React.Dispatch<
           options={[["flow", "Scrolling page"], ["screens", "Screen by screen (each snaps into place)"]]}
           onChange={(mode) => setPage({ mode })}
         />
+        <SwitchField label="Same look on every screen" checked={!!s.page.sameLook} onChange={(sameLook) => setPage({ sameLook })} />
+        <p className="text-xs text-soft">
+          {s.page.sameLook
+            ? "Phones and tablets show a smaller copy of the page exactly as you design it here: every element keeps its place, spacing and size. The RSVP form and map sections stay full size so they are easy to use; any section can be switched on or off in its own settings."
+            : "Off: on phones the page re-arranges itself to fit (text stays full size)."}
+        </p>
         {s.page.mode === "screens" && (
           <SelectField label="Screen transition" value={s.page.transition} options={[["rise", "Rise up"], ["zoom", "Zoom in"], ["slide", "Slide from the sides"], ["fade", "Fade"]]} onChange={(transition) => setPage({ transition })} />
         )}
@@ -1465,39 +1872,89 @@ function ThemeTool({ s, setS, onPickType }: { s: Settings; setS: React.Dispatch<
 
 const PAPER_PRESETS = ["#fbf7ef", "#ffffff", "#fbe4e6", "#e3effa", "#e2f3e8", "#e8d3b0", "#ece6f7", "#3f3f46"];
 const WAX_PRESETS = ["#b91c1c", "#7f1d1d", "#b8860b", "#1e3a8a", "#166534", "#27272a", "#be185d", "#0f766e"];
+const LETTER_PRESETS = ["#fffdf8", "#ffffff", "#fdf6e3", "#fdf2f8", "#f0f9ff", "#f7fee7"];
 const CARD_BG_FROM = ["#ffffff", "#fff7ed", "#f0f9ff", "#fdf2f8", "#f7fee7", "#18181b"];
 const CARD_BG_TO = ["#e0e7ff", "#fde68a", "#bae6fd", "#fbcfe8", "#d9f99d", "#312e81"];
 const CARD_TEXT = ["#27272a", "#7f1d1d", "#1e3a8a", "#166534", "#6b21a8", "#ffffff"];
 
 /** The opening card: a sealed envelope guests tap first. Its words, shape, paper, wax seal, background and writing are all set here. */
-function CardTool({ s, setS, onTry }: { s: Settings; setS: React.Dispatch<React.SetStateAction<Settings>>; onTry: () => void }) {
+const CARD_PART_TITLE: Record<CardPart, string> = { letter: "Card: Letter paper", envelope: "Card: Envelope", seal: "Card: Wax seal", title: "Card: Heading", sender: "Card: From", hint: "Card: Hint" };
+
+/** The settings of one piece of the opening card (clicked in the preview): each piece gets its own floating panel. */
+function CardTool({ s, setS, onTry, onLetter, part }: { s: Settings; setS: React.Dispatch<React.SetStateAction<Settings>>; onTry: () => void; onLetter: () => void; part: CardPart }) {
   const intro = s.page.intro;
   const setIntro = (p: Partial<Settings["page"]["intro"]>) => setS((prev) => ({ ...prev, page: { ...prev.page, intro: { ...prev.page.intro, ...p } } }));
   const heading = (label: string) => <p className="border-b border-border pb-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-soft">{label}</p>;
   /** a colour that follows the theme until you pick one */
-  const colour = (label: string, key: "paper" | "sealColor" | "bgFrom" | "bgTo" | "textColor", presets: string[], themed: string) => (
+  const colour = (label: string, key: "paper" | "sealColor" | "textColor", presets: string[], themed: string) => (
     <div className="grid gap-1.5">
       <ColorField label={label} value={intro[key] || themed} presets={presets} onChange={(v) => setIntro({ [key]: v })} />
       {intro[key] && <Button variant="outline" size="xs" className="justify-self-start" onClick={() => setIntro({ [key]: "" })}>Use the theme colour</Button>}
     </div>
   );
   const letter = (intro.sender.replace(/\{name\}/gi, "").trim()[0] ?? "A").toUpperCase();
-  return (
-    <div className="grid gap-4">
-      <SwitchField label="Opening card — a sealed envelope, tap to open" checked={intro.on} onChange={(on) => setIntro({ on })} />
-      {intro.on ? (
-        <>
-          {heading("Words")}
+  const bgMode = intro.bgTo ? "gradient" : intro.bgFrom ? "solid" : "theme";
+  /** bend a line of the card: below 0 it smiles, above 0 it arches */
+  const curveField = (key: "titleCurve" | "senderCurve") => {
+    const v = intro[key] ?? 0;
+    return (
+      <div className="grid gap-1.5">
+        <SliderField label={`Curve ${!v ? "— straight" : v > 0 ? "— arch" : "— smile"}`} min={-100} max={100} value={v} onChange={(n) => setIntro({ [key]: Math.abs(n) < 3 ? 0 : n })} />
+        {!!v && <p className="text-xs text-soft">While curved, change its words here (the card shows it curved).</p>}
+        {!!v && <Button variant="outline" size="xs" className="justify-self-start" onClick={() => setIntro({ [key]: 0 })}>Straighten</Button>}
+      </div>
+    );
+  };
+  // the writing (font and colour) is shared by all the card's words, so each text piece offers it
+  const writing = (
+    <>
+      {heading("Writing — all the card's words")}
+      <SelectField label="Font style" value={intro.font} options={FONT_OPTIONS} onChange={(font) => setIntro({ font })} />
+      {colour("Text colour", "textColor", CARD_TEXT, "#27272a")}
+    </>
+  );
+  switch (part) {
+    case "title":
+      return (
+        <div className="grid gap-4">
           <TextField label="Heading" value={intro.title} maxLength={80} onChange={(title) => setIntro({ title })} />
+          {curveField("titleCurve")}
+          {writing}
+        </div>
+      );
+    case "sender":
+      return (
+        <div className="grid gap-4">
           <TextField label="From — use {name} for the event name" value={intro.sender} maxLength={60} onChange={(sender) => setIntro({ sender })} />
+          {curveField("senderCurve")}
+          {writing}
+        </div>
+      );
+    case "hint":
+      return (
+        <div className="grid gap-4">
           <TextField label="Hint under the envelope" value={intro.hint} maxLength={60} onChange={(hint) => setIntro({ hint })} />
+          {writing}
+        </div>
+      );
+    case "letter":
+      return (
+        <div className="grid gap-4">
+          <p className="text-xs text-soft">The paper that slides out when the envelope opens. It stays out while this panel is open.</p>
           <TextField label="Message on the letter (optional)" value={intro.letter} maxLength={60} onChange={(letter) => setIntro({ letter })} />
-
-          {heading("Envelope")}
-          <SelectField label="Shape" value={intro.shape} options={[["classic", "Classic — soft corners"], ["sharp", "Sharp — square corners"], ["soft", "Soft — very round"], ["arch", "Arch — curved flap"]]} onChange={(shape) => setIntro({ shape })} />
-          {colour("Paper colour", "paper", PAPER_PRESETS, "#fbf7ef")}
-
-          {heading("Wax seal")}
+          <SelectField label="Font size" value={intro.letterSize} options={SIZE_OPTIONS} onChange={(letterSize) => setIntro({ letterSize })} />
+          <div className="grid gap-1.5">
+            <ColorField label="Paper colour" value={intro.letterPaper || "#fffdf8"} presets={LETTER_PRESETS} onChange={(letterPaper) => setIntro({ letterPaper })} />
+            {intro.letterPaper && <Button variant="outline" size="xs" className="justify-self-start" onClick={() => setIntro({ letterPaper: "" })}>Match the envelope</Button>}
+          </div>
+          <SelectField label="Pattern" value={intro.letterPattern} options={[["plain", "Plain"], ["lined", "Lined — writing paper"], ["dots", "Dots"], ["grid", "Grid"], ["stripes", "Soft stripes"], ["hearts", "Little hearts"], ["stars", "Little stars"]]} onChange={(letterPattern) => setIntro({ letterPattern })} />
+          <SelectField label="Frame" value={intro.letterBorder} options={[["single", "Thin line"], ["double", "Double line"], ["dashed", "Dashed"], ["gold", "Gold"], ["none", "None"]]} onChange={(letterBorder) => setIntro({ letterBorder })} />
+          {writing}
+        </div>
+      );
+    case "seal":
+      return (
+        <div className="grid gap-4">
           <div className="flex flex-wrap gap-1.5">
             {SEAL_IDS.map((id) => (
               <button key={id} type="button" title={SEAL_LABELS[id]} aria-label={`${SEAL_LABELS[id]} seal`} aria-pressed={asSealId(intro.seal) === id} onClick={() => setIntro({ seal: id })} className={`flex h-9 w-9 items-center justify-center rounded-lg border text-accent-700 ${asSealId(intro.seal) === id ? "border-fg bg-surface-muted" : "border-border hover:border-fg/40"}`}>
@@ -1506,25 +1963,36 @@ function CardTool({ s, setS, onTry }: { s: Settings; setS: React.Dispatch<React.
             ))}
           </div>
           {colour("Wax colour", "sealColor", WAX_PRESETS, s.theme.accent)}
+        </div>
+      );
+    default:
+      return (
+        <div className="grid gap-4">
+          <SwitchField label="Opening card — a sealed envelope, tap to open" checked={intro.on} onChange={(on) => setIntro({ on })} />
+          {!intro.on && <p className="text-xs text-soft">Off. Turn it on and guests see a wax-sealed envelope first; tapping it opens the letter and reveals your page.</p>}
+          {heading("Envelope")}
+          <SelectField label="Shape" value={intro.shape} options={[["classic", "Classic — soft corners"], ["sharp", "Sharp — square corners"], ["soft", "Soft — very round"], ["arch", "Arch — curved flap"]]} onChange={(shape) => setIntro({ shape })} />
+          {colour("Paper colour", "paper", PAPER_PRESETS, "#fbf7ef")}
+          <Button size="sm" shape="pill" variant="outline" icon="mail-open" className="justify-self-start font-semibold" onClick={onLetter}>Design the letter paper</Button>
 
           {heading("Background")}
-          {colour("Top colour", "bgFrom", CARD_BG_FROM, "#ffffff")}
-          {colour("Bottom colour", "bgTo", CARD_BG_TO, s.theme.accent)}
-
-          {heading("Writing")}
-          <SelectField label="Font" value={intro.font} options={[["serif", "Serif — elegant"], ["script", "Script — handwritten"], ["sans", "Sans — clean"], ["rounded", "Rounded — friendly"]]} onChange={(font) => setIntro({ font })} />
-          {colour("Text colour", "textColor", CARD_TEXT, "#27272a")}
+          <SelectField
+            label="Background"
+            value={bgMode}
+            options={[["theme", "Plain — white (dark in dark mode)"], ["solid", "One colour"], ["gradient", "Gradient — two colours"]]}
+            onChange={(m) => setIntro(m === "theme" ? { bgFrom: "", bgTo: "" } : m === "solid" ? { bgFrom: intro.bgFrom || CARD_BG_FROM[0], bgTo: "" } : { bgFrom: intro.bgFrom || CARD_BG_FROM[0], bgTo: intro.bgTo || CARD_BG_TO[0] })}
+          />
+          {bgMode === "theme" && <p className="text-xs text-soft">Follows the page: white in light mode, dark in dark mode.</p>}
+          {bgMode !== "theme" && <ColorField label={bgMode === "gradient" ? "Top colour" : "Colour"} value={intro.bgFrom || CARD_BG_FROM[0]} presets={CARD_BG_FROM} onChange={(bgFrom) => setIntro({ bgFrom })} />}
+          {bgMode === "gradient" && <ColorField label="Bottom colour" value={intro.bgTo} presets={CARD_BG_TO} onChange={(bgTo) => setIntro({ bgTo })} />}
 
           <div className="flex flex-wrap gap-2">
             <Button size="sm" shape="pill" icon="eye" className="font-semibold" onClick={onTry}>Try the opening card</Button>
-            <Button size="sm" shape="pill" variant="outline" onClick={() => setIntro({ shape: "classic", paper: "", sealColor: "", bgFrom: "", bgTo: "", textColor: "", font: "serif", letter: "" })}>Reset the look</Button>
+            <Button size="sm" shape="pill" variant="outline" onClick={() => setIntro({ shape: "classic", paper: "", sealColor: "", bgFrom: "", bgTo: "", textColor: "", font: "elegant", letter: "", letterPaper: "", letterPattern: "plain", letterBorder: "single", letterSize: "md" })}>Reset the look</Button>
           </div>
-        </>
-      ) : (
-        <p className="text-xs text-soft">Off. Turn it on and guests see a wax-sealed envelope first; tapping it opens the letter and reveals your page.</p>
-      )}
-    </div>
-  );
+        </div>
+      );
+  }
 }
 
 /** a small labelled group in the section settings */
@@ -1540,11 +2008,12 @@ function Group({ label, Icon, children }: { label: string; Icon: LucideIcon; chi
   );
 }
 
-function SectionEditor({ sec, set, remove }: { sec: Section; set: (p: Partial<Section>) => void; remove: () => void }) {
+function SectionEditor({ sec, set, remove }: { sec: Section; set: (p: Partial<Section>) => void; remove?: () => void }) {
   return (
     <div className="grid gap-6">
       <Group label="General" Icon={SlidersHorizontal}>
         <TextField label="Name (admin only)" value={sec.name} maxLength={60} onChange={(name) => set({ name })} />
+        <SwitchField label="Hide on phones" checked={sec.showOn === "desktop"} onChange={(off) => set({ showOn: off ? "desktop" : undefined })} />
         <SwitchField label="Hide this section on the site" checked={sec.hidden} onChange={(hidden) => set({ hidden })} />
       </Group>
 
@@ -1597,18 +2066,34 @@ function SectionEditor({ sec, set, remove }: { sec: Section; set: (p: Partial<Se
       </Group>
 
       <Group label="Layout" Icon={LayoutTemplate}>
-        <SliderField label="Extra height below the content (px)" value={sec.grow} min={0} max={400} onChange={(grow) => set({ grow })} />
+        <SliderField label="Extra height below the content (px)" value={sec.grow} min={0} max={Math.max(400, sec.grow)} onChange={(grow) => set({ grow })} />
         <SelectField label="Spacing" value={sec.pad} options={[["sm", "Small"], ["md", "Medium"], ["lg", "Large"]]} onChange={(pad) => set({ pad })} />
         <SelectField label="Panel shape behind the content" value={sec.panel} options={PANEL_OPTIONS} onChange={(panel) => set({ panel })} />
         <SwitchField label="Rounded card style" checked={sec.card} onChange={(card) => set({ card })} />
         <SwitchField label="Wide content (use more of the page width)" checked={sec.wide} onChange={(wide) => set({ wide })} />
+        <SelectField
+          label="Scale with the screen"
+          value={sec.shrink === undefined ? "page" : sec.shrink ? "on" : "off"}
+          options={[["page", "As the page (Event & theme → Same look on every screen)"], ["on", "On — same look on every screen"], ["off", "Off — re-arrange to fit phones"]]}
+          onChange={(v) => set({ shrink: v === "page" ? undefined : v === "on" })}
+        />
+        {sec.shrink && <p className="text-xs text-soft">The whole section grows and shrinks with the screen&rsquo;s width like a picture: smaller on phones, bigger on large monitors, with its spacing, sizes and stickers always in the same place. Best for picture-led sections; long text gets small on phones.</p>}
+        <SelectField
+          label="Full screen height"
+          value={sec.fullScreen ?? "off"}
+          options={[["off", "Off — as tall as its content"], ["mobile", "On phones only"], ["always", "On every screen"]]}
+          onChange={(fullScreen) => set({ fullScreen })}
+        />
+        {sec.fullScreen && sec.fullScreen !== "off" && <p className="text-xs text-soft">The section fills one screen, with its content in the middle, so stickers keep their place on the screen. {sec.fullScreen === "mobile" ? "Phones only: check it in Preview at phone size." : ""}</p>}
       </Group>
 
-      <div className="border-t border-border pt-5">
-        <Button variant="destructive-outline" size="sm" shape="pill" icon="trash-2" className="w-full font-semibold" onClick={remove}>
-          Delete section
-        </Button>
-      </div>
+      {remove && (
+        <div className="border-t border-border pt-5">
+          <Button variant="destructive-outline" size="sm" shape="pill" icon="trash-2" className="w-full font-semibold" onClick={remove}>
+            Delete section
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1682,32 +2167,169 @@ function RsvpPartEditor({ b, partKey, set, onRemoved }: { b: Block; partKey: Rsv
   );
 }
 
-function BlockEditor({ b, set, remove, setMsg, onEditPart, onToFixed }: { onToFixed?: () => void; b: Block; set: (p: Partial<Block>) => void; remove: () => void; setMsg: (m: { ok: boolean; text: string }) => void; onEditPart?: (key: RsvpPartKey) => void }) {
+const GROUP_DESIGNS = [["none", "None"], ["card", "Card"], ["soft", "Soft panel"], ["outline", "Dashed outline"], ["shadow", "Raised card"], ["accent", "Accent colour"], ["glass", "Glass"], ["gradient", "Colour gradient"], ["wavy", "Wavy edges"], ["ticket", "Ticket (notched)"], ["blob", "Soft blob (double outline)"], ["goldframe", "Gold double frame"], ["cartouche", "Ornate mirror frame"], ["flourish", "Corner flourishes"]] as const;
+const GROUP_COLORS = ["#6366f1", "#8b5cf6", "#ec4899", "#f43f5e", "#f97316", "#f59e0b", "#22c55e", "#14b8a6", "#0ea5e9", "#18181b"];
+
+/** layout, design, illustrated border and colour of a group of elements */
+function GroupFields({ first, update }: { first: Block; update: (p: Partial<Block>) => void }) {
+  const bw = first.groupBorderW ?? 0;
+  return (
+    <>
+      <div className="grid gap-3 rounded-xl border border-border p-3">
+        <p className="text-xs font-bold uppercase tracking-wide text-soft">Box</p>
+        <SwitchField label="Hide on phones" checked={first.showOn === "desktop"} onChange={(off) => update({ showOn: off ? "desktop" : "all" })} />
+        <SelectField
+          label="Position"
+          value={first.groupFloat ? "fixed" : "layout"}
+          options={[["layout", "Part of the layout — pushes what is below"], ["fixed", "Fixed — floats anywhere, nothing moves"]]}
+          onChange={(v) => {
+            if (v === "layout") return update({ groupFloat: undefined, groupX: 0, groupY: 0 });
+            // keep it where it is now, and its current width, as it starts to float
+            const el = document.querySelector<HTMLElement>(`.editing [data-group="${first.group}"]`);
+            const body = el?.closest<HTMLElement>("[data-sec-body]");
+            if (!el || !body) return update({ groupFloat: true, groupX: 0, groupY: 0 });
+            const er = el.getBoundingClientRect(), br = body.getBoundingClientRect();
+            update({
+              groupFloat: true,
+              groupX: Math.round(((er.left - br.left) / br.width) * 1000) / 10,
+              groupY: Math.round(er.top - br.top),
+              ...(first.groupW ? {} : { groupW: Math.max(10, Math.min(100, Math.round((er.width / br.width) * 100))) }),
+            });
+          }}
+        />
+        {first.groupFloat && <p className="text-xs text-soft">It floats over the section. If it hangs past the bottom, make the section taller (Section settings → Extra height below the content).</p>}
+        <SliderField label={`Width ${first.groupW ? `— ${first.groupW}%` : "— full"}`} min={10} max={100} value={first.groupW ?? 100} onChange={(groupW) => update({ groupW: groupW >= 100 ? undefined : groupW })} />
+        <SliderField label={`Height ${first.groupH ? `— at least ${first.groupH}px` : "— fits its content"}`} min={0} max={1200} value={first.groupH ?? 0} onChange={(groupH) => update({ groupH: groupH || undefined })} />
+        <SliderField label={`Corner radius ${first.groupRadius === undefined ? "— as the design" : `— ${first.groupRadius}px`}`} min={0} max={120} value={first.groupRadius ?? 24} onChange={(groupRadius) => update({ groupRadius })} />
+        <SliderField label={`Border ${bw ? `— ${bw}px` : "— none"}`} min={0} max={16} value={bw} onChange={(groupBorderW) => update({ groupBorderW })} />
+        {bw > 0 && (
+          <>
+            <SelectField label="Border style" value={first.groupBorderStyle ?? "solid"} options={[["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["double", "Double"]]} onChange={(groupBorderStyle) => update({ groupBorderStyle })} />
+            <ColorField label="Border colour" value={first.groupBorderColor || "#e4e4e7"} presets={["#e4e4e7", "#18181b", "#e11d48", "#2563eb", "#c9a24a", "#ffffff"]} onChange={(groupBorderColor) => update({ groupBorderColor })} />
+          </>
+        )}
+        <details className="group/art rounded-lg border border-border">
+          <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-medium">
+            Border design {first.groupArt && (["top", "bottom", "left", "right"] as const).some((k) => first.groupArt![k] !== "none") ? <span className="text-xs text-accent-600">on</span> : <span className="text-xs text-soft">none</span>}
+          </summary>
+          <div className="border-t border-border p-2">
+            <BorderPicker border={first.groupArt ?? DEFAULT_BORDER} onChange={(patch) => update({ groupArt: { ...(first.groupArt ?? DEFAULT_BORDER), ...patch } })} />
+          </div>
+        </details>
+        <p className="text-xs text-soft">Drag the box by its edge or its tag to move it, or by the blue dot at its corner to resize it.</p>
+        {(first.groupX || first.groupY || first.groupRadius !== undefined || bw > 0 || first.groupW || first.groupH || first.groupArt) && (
+          <div className="flex flex-wrap gap-2">
+            {(first.groupX || first.groupY) ? <Button variant="outline" size="xs" onClick={() => update({ groupX: 0, groupY: 0 })}>Put it back in place</Button> : null}
+            {(first.groupRadius !== undefined || bw > 0 || first.groupArt) && <Button variant="outline" size="xs" onClick={() => update({ groupRadius: undefined, groupBorderW: 0, groupArt: undefined })}>Reset border &amp; corners</Button>}
+            {(first.groupW || first.groupH) ? <Button variant="outline" size="xs" onClick={() => update({ groupW: undefined, groupH: undefined })}>Reset size</Button> : null}
+          </div>
+        )}
+      </div>
+      <SelectField label="Layout" value={first.groupDir} options={[["row", "Row (side by side)"], ["col", "Column (stacked)"]]} onChange={(groupDir) => update({ groupDir })} />
+      <SelectField label="Design" value={first.groupStyle} options={GROUP_DESIGNS.map((d) => [d[0], d[1]] as const)} onChange={(groupStyle) => update({ groupStyle })} />
+      <SelectField label="Crown" value={first.groupCrown} options={[["none", "None"], ["gold", "Gold crown"], ["banner", "Crown on a gold banner"], ["royal", "Royal crown"], ["tiara", "Tiara"], ["flowers", "Flower crown"], ["party", "Party crown"]]} onChange={(groupCrown) => update({ groupCrown })} />
+      <SwitchField label="Custom colour" checked={!!first.groupColor} onChange={(on) => update({ groupColor: on ? "#6366f1" : "" })} />
+      {first.groupColor && first.groupStyle === "none" && <p className="text-xs text-soft">The colour fills the group's background. Pick a Design above for a different look.</p>}
+      {first.groupColor && <ColorField label="Colour" value={first.groupColor} presets={GROUP_COLORS} onChange={(groupColor) => update({ groupColor })} />}
+    </>
+  );
+}
+
+/** the ribbon's looks — the same for every style: size, width, arch, words (font, colour), tails, shine and shadow */
+function RibbonFields({ b, set }: { b: Block; set: (p: Partial<Block>) => void }) {
+  const o = b.ribbon ?? {};
+  const put = (p: NonNullable<Block["ribbon"]>) => set({ ribbon: { ...o, ...p } });
+  return (
+    <div className="grid gap-3 rounded-xl border border-border p-3">
+      <p className="text-xs font-bold uppercase tracking-wide text-soft">Ribbon look</p>
+      <SelectField label="Size" value={b.size} options={[["sm", "Small"], ["md", "Medium"], ["lg", "Large"], ["xl", "Extra large"]]} onChange={(size) => set({ size })} />
+      <SelectField label="Words font" value={o.font ?? (b.text2 === "gold" ? "serif" : "bold")} options={[["bold", "Bold"], ["display", "Heading font (theme)"], ["serif", "Classic serif"], ["script", "Fun hand-lettered"]]} onChange={(font) => put({ font })} />
+      <SwitchField label="Custom words colour" checked={!!o.textColor} onChange={(on) => put({ textColor: on ? "#ffffff" : "" })} />
+      {o.textColor && <ColorField label="Words colour" value={o.textColor} presets={["#ffffff", "#18181b", "#fde68a", "#6b4a12", "#e11d48", "#1d4ed8"]} onChange={(textColor) => put({ textColor })} />}
+      <SliderField label={`Arch ${(o.arch ?? 60) < 15 ? "— almost flat" : (o.arch ?? 60) > 80 ? "— tall" : ""}`} min={0} max={100} value={o.arch ?? 60} onChange={(arch) => put({ arch })} />
+      <SliderField label={`Width — ${o.width ?? 100}%`} min={50} max={180} value={o.width ?? 100} onChange={(width) => put({ width })} />
+      <SelectField label="Tails" value={o.tails ?? "v"} options={[["v", "V-cut ends"], ["straight", "Straight ends"], ["none", "No tails"]]} onChange={(tails) => put({ tails })} />
+      <SwitchField label="Shine" checked={o.shine ?? b.text2 !== ""} onChange={(shine) => put({ shine })} />
+      <SwitchField label="Drop shadow" checked={o.shadow !== false} onChange={(shadow) => put({ shadow })} />
+      {b.ribbon && <Button variant="outline" size="xs" className="justify-self-start" onClick={() => set({ ribbon: undefined, size: "md" })}>Reset the look</Button>}
+    </div>
+  );
+}
+
+function BlockEditor({ b, set, remove, setMsg, onEditPart, onToFixed, setGroup, onSelectGroup, phone = false, onResetPhone }: { phone?: boolean; onResetPhone?: () => void; onSelectGroup?: () => void; onToFixed?: () => void; setGroup?: (p: Partial<Block>) => void; b: Block; set: (p: Partial<Block>) => void; remove: () => void; setMsg: (m: { ok: boolean; text: string }) => void; onEditPart?: (key: RsvpPartKey) => void }) {
   const t = (field: "text" | "text2" | "text3" | "url" | "icon" | "back", label: string, long = false) => (
     <TextField label={label} value={b[field]} long={long} onChange={(v) => set({ [field]: v })} />
   );
   const rsvp = rsvpPartOps(b, set);
   const sizeSel = (label = "Size") => <SelectField label={label} value={b.size} options={SIZE_OPTIONS} onChange={(size) => set({ size })} />;
   const toneSel = <SelectField label="Colour" value={b.tone} options={TONE_OPTIONS} onChange={(tone) => set({ tone })} />;
+  // bend the line: below 0 it smiles, above 0 it arches like a rainbow
+  const curveSel = (
+    <div className="grid gap-1.5">
+      <SliderField label={`Curve ${!b.curve ? "— straight" : b.curve > 0 ? "— arch" : "— smile"}`} min={-100} max={100} value={b.curve ?? 0} onChange={(v) => set({ curve: Math.abs(v) < 3 ? 0 : v })} />
+      {!!b.curve && <p className="text-xs text-soft">A curved text is written on one line.</p>}
+      {!!b.curve && <Button variant="outline" size="xs" className="justify-self-start" onClick={() => set({ curve: 0 })}>Straighten</Button>}
+    </div>
+  );
 
   return (
     <>
       <div className="grid gap-3">
-        {b.type === "badge" && t("text", "Text")}
+        {/* which screens show it, and (Phone mode) its own size and place on phones */}
+        <div className="grid gap-2 rounded-xl border border-border p-3">
+          <SwitchField label="Hide on phones" checked={b.showOn === "desktop"} onChange={(off) => set({ showOn: off ? "desktop" : "all" })} />
+          <SelectField label="Show on" value={b.showOn ?? "all"} options={[["all", "Every screen"], ["desktop", "Large screens only"], ["phone", "Phones only"]]} onChange={(showOn) => set({ showOn })} />
+          {phone && (
+            <>
+              <SliderField label={`Size on phones — ${b.m?.zoom ?? 100}%`} min={25} max={300} value={b.m?.zoom ?? 100} onChange={(zoom) => set({ m: { ...(b.m ?? {}), zoom: Math.abs(zoom - 100) < 3 ? 100 : zoom } })} />
+              <p className="text-xs text-soft">Phone mode: dragging it, and this size, change phones only.</p>
+              {b.m && onResetPhone && <Button variant="outline" size="xs" className="justify-self-start" onClick={onResetPhone}>Use the large-screen place &amp; size</Button>}
+            </>
+          )}
+        </div>
+        {/* the card box this element sits in has its own floating panel (its look, size, border, position) */}
+        {b.group && setGroup && (
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-border px-3 py-2">
+            <span className="text-xs font-semibold text-soft">{b.groupStyle === "none" ? "Inside a group" : "Inside a card box"}</span>
+            <Button variant="outline" size="xs" icon="square-stack" onClick={() => onSelectGroup?.()}>{b.groupStyle === "none" ? "Group settings" : "Card box settings"}</Button>
+          </div>
+        )}
+        {b.type === "badge" && (
+          <>
+            {t("text", "Text")}
+            {curveSel}
+          </>
+        )}
         {b.type === "heading" && (
           <>
             {t("text", "Text")}
             <div className="grid grid-cols-2 gap-2">{sizeSel()}{toneSel}</div>
             <SwitchField label="UPPERCASE" checked={b.caps} onChange={(caps) => set({ caps })} />
+            {curveSel}
           </>
         )}
         {b.type === "text" && (
           <>
             {t("text", "Text", true)}
             <div className="grid grid-cols-2 gap-2">{sizeSel()}{toneSel}</div>
+            {curveSel}
           </>
         )}
-        {b.type === "script" && t("text", "Text")}
+        {b.type === "script" && (
+          <>
+            {t("text", "Text")}
+            {curveSel}
+          </>
+        )}
+        {b.type === "ribbon" && (
+          <>
+            {t("text", "Words on the ribbon")}
+            <SelectField label="Style" value={b.text2 === "gold" || b.text2 === "arc" ? b.text2 : "classic"} options={[["classic", "Classic (one colour)"], ["arc", "3D curved banner"], ["gold", "Gold scroll"]]} onChange={(v) => set({ text2: v === "classic" ? "" : v })} />
+            {b.text2 !== "gold" && <SwitchField label="Custom colour" checked={!!b.color} onChange={(on) => set({ color: on ? "#e11d48" : "" })} />}
+            {b.text2 !== "gold" && b.color && <ColorField label="Ribbon colour" value={b.color} presets={GROUP_COLORS} onChange={(color) => set({ color })} />}
+            <RibbonFields b={b} set={set} />
+          </>
+        )}
         {b.type === "button" && (
           <>
             {t("text", "Button text")}
@@ -1730,6 +2352,16 @@ function BlockEditor({ b, set, remove, setMsg, onEditPart, onToFixed }: { onToFi
             {t("url", "Link (optional, https://…)")}
             <SelectField label="When tapped" value={b.tap} options={[["none", "Nothing"], ["flip", "Flip over"], ["pop", "Pop (bounce)"]]} onChange={(tap) => set({ tap })} />
             {b.tap === "flip" && t("back", "Text on the back", true)}
+            {/* colour circles are for the dress code card: shown when the card has the shirt icon or "dress" in its title */}
+            {(b.color || b.icon === "shirt" || /dress/i.test(b.text)) && <SwitchField label="Show colour circles (dress code)" checked={!!b.color} onChange={(on) => set({ color: on ? "#6366f1" : "" })} />}
+            {b.color && (
+              <>
+                <ColorField label="Pick a colour — its matching shades are made automatically" value={b.color} presets={["#6366f1", "#0ea5e9", "#14b8a6", "#22c55e", "#f59e0b", "#ef4444", "#ec4899", "#18181b"]} onChange={(color) => set({ color })} />
+                <div className="flex pl-3">
+                  {colorShades(b.color).map((c, i) => <span key={i} title={c} className="-ml-3 h-8 w-8 rounded-full border-2 border-white shadow" style={{ background: c }} />)}
+                </div>
+              </>
+            )}
           </>
         )}
         {b.type === "step" && (<>{t("text", "Time")}{t("text2", "Title")}{t("text3", "Description", true)}</>)}
@@ -1804,18 +2436,117 @@ function BlockEditor({ b, set, remove, setMsg, onEditPart, onToFixed }: { onToFi
   );
 }
 
+/** "Remove background" for any uploaded picture (an Image element, or a picture sticker / illustration).
+ *  The cut-out is previewed first, with a "keep more / remove more" slider for its edge; applying uploads it as a new picture.
+ *  The original is kept, so it can be brought back (and cut again from the untouched one). */
+function RemoveBackground({ src, original, onCut, onRestore }: { src: string; original?: string; onCut: (url: string, original: string) => void; onRestore: () => void }) {
+  const [busy, setBusy] = useState<"" | "cutting" | "saving">("");
+  const [error, setError] = useState("");
+  const [quality, setQuality] = useState<"best" | "fast">("best");
+  const [cut, setCut] = useState<import("@/lib/remove-bg").Cutout | null>(null);
+  const [keep, setKeep] = useState(0);
+  const [preview, setPreview] = useState("");
+
+  // redraw the preview whenever the cut-out or the edge setting changes
+  useEffect(() => {
+    if (!cut) return;
+    let url = "";
+    let live = true;
+    const id = setTimeout(async () => {
+      const { toPng } = await import("@/lib/remove-bg");
+      const png = await toPng(cut, keep);
+      if (!live) return;
+      url = URL.createObjectURL(png);
+      setPreview(url);
+    }, 60);
+    return () => {
+      live = false;
+      clearTimeout(id);
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [cut, keep]);
+
+  async function run() {
+    if (!src || busy) return;
+    setBusy("cutting");
+    setError("");
+    try {
+      const { cutOut } = await import("@/lib/remove-bg");
+      setCut(await cutOut(original || src, quality)); // always from the untouched picture
+      setKeep(0);
+    } catch (err) {
+      console.error("Background removal failed", err);
+      setError("Could not remove the background. Check your connection and try again.");
+    } finally {
+      setBusy("");
+    }
+  }
+  async function apply() {
+    if (!cut) return;
+    setBusy("saving");
+    try {
+      const { toPng } = await import("@/lib/remove-bg");
+      const dt = new DataTransfer();
+      dt.items.add(new File([await toPng(cut, keep)], "cut-out.png", { type: "image/png" }));
+      const [url] = await uploadFiles(dt.files, 1, setError);
+      if (url) {
+        onCut(url, original || src);
+        setCut(null);
+        setPreview("");
+      }
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div className="grid gap-2 rounded-xl border border-border p-3">
+      <p className="text-xs font-bold uppercase tracking-wide text-soft">Background</p>
+      {cut ? (
+        <>
+          {/* the result on a checkerboard, so what is now see-through shows */}
+          <div className="grid place-items-center overflow-hidden rounded-lg border border-border p-1" style={{ background: "repeating-conic-gradient(#e4e4e7 0 25%, #fff 0 50%) 0 0 / 16px 16px" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            {preview ? <img src={preview} alt="Preview of the cut-out" className="max-h-56 w-auto object-contain" /> : <span className="py-10 text-xs text-soft">Preparing the preview…</span>}
+          </div>
+          <SliderField label={`Edge ${keep === 0 ? "— as found" : keep > 0 ? "— keeping more" : "— removing more"}`} min={-100} max={100} value={keep} onChange={(v) => setKeep(Math.abs(v) < 4 ? 0 : v)} />
+          <p className="text-xs text-soft">Parts of your subject missing? Slide toward keep more. Background left around it? Slide toward remove more.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" shape="pill" icon="check" className="font-semibold" loading={busy === "saving"} disabled={!!busy} onClick={apply}>Use this</Button>
+            <Button size="sm" shape="pill" variant="outline" disabled={!!busy} onClick={() => { setCut(null); setPreview(""); }}>Cancel</Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <SelectField label="Quality" value={quality} options={[["best", "Best — any subject"], ["fast", "Fast — portraits only"]]} onChange={setQuality} />
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" shape="pill" icon="eraser" className="font-semibold" loading={busy === "cutting"} disabled={!!busy} onClick={run}>
+              {busy === "cutting" ? "Removing…" : original ? "Remove again" : "Remove background"}
+            </Button>
+            {original && !busy && <Button size="sm" shape="pill" variant="outline" icon="undo-2" onClick={onRestore}>Bring it back</Button>}
+          </div>
+          <p className={`text-xs ${error ? "text-red-600" : "text-soft"}`}>
+            {error || (busy ? "The first time takes longer while the tool downloads (it is kept for next time)." : "It runs in your browser: you will see the result before it is used.")}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ImageField({ b, set, setMsg }: { b: Block; set: (p: Partial<Block>) => void; setMsg: (m: { ok: boolean; text: string }) => void }) {
   return (
     <>
       {b.url && <Image src={b.url} alt={b.text} ratio="16/9" fit="cover" rounded="lg" />}
       <TextField label="Description (alt text)" value={b.text} onChange={(text) => set({ text })} />
-      <SelectField label="Image size" value={b.size} options={[["sm", "Small"], ["md", "Medium"], ["lg", "Large"], ["xl", "Extra large"]]} onChange={(size) => set({ size })} />
+      <SliderField label="Image width (px)" min={80} max={1600} step={10} value={imageWidth(b)} onChange={(imgW) => set({ imgW })} />
+      {b.url && <RemoveBackground src={b.url} original={b.original} onCut={(url, original) => set({ url, original })} onRestore={() => set({ url: b.original, original: undefined })} />}
       <FileUpload
         label={b.url ? "Replace image" : "Upload image"}
         accept="image/png,image/jpeg,image/webp,image/gif"
         onFilesSelected={async (files) => {
           const [url] = await uploadFiles(files, 1, (m) => setMsg({ ok: false, text: m }));
-          if (url) set({ url });
+          if (url) set({ url, original: undefined });
         }}
       />
     </>
@@ -1965,6 +2696,14 @@ function stickerHandles(d: Decoration, onChange: (id: string, patch: Partial<Dec
       <>
         <span aria-hidden className="absolute left-1/2 -top-5 h-5 w-px bg-[#2563eb]" />
         <span title="Drag to rotate (Shift snaps to 15°)" data-keep className={`${knob} cursor-grab`} style={at("50%", "-28px")} onPointerDown={grab("rot")}><RotateCw size={13} /></span>
+        {/* how far it is turned, kept upright and readable whatever the angle (the inverse of the sticker's own turn and stretch) */}
+        <span
+          aria-live="polite"
+          className="pointer-events-none absolute whitespace-nowrap rounded-full bg-[#2563eb] px-2 py-0.5 text-[11px] font-bold tabular-nums text-white shadow"
+          style={{ left: "50%", top: "-58px", transform: `translate(-50%,-50%) scale(${1 / sx},${1 / sy}) rotate(${-d.rotate}deg)` }}
+        >
+          {d.rotate > 0 ? `+${d.rotate}°` : `${d.rotate}°`}
+        </span>
         <span title="Drag to resize" data-keep className={`${knob} cursor-nwse-resize`} style={at("100%", "100%")} onPointerDown={grab("size")}><Maximize2 size={13} /></span>
         <span
           title="Remove"
@@ -1993,6 +2732,8 @@ function DragLayer({
   onChange,
   onRemove,
   draggingRef,
+  playing,
+  wide,
 }: {
   items: Decoration[];
   selected: string | null;
@@ -2002,19 +2743,44 @@ function DragLayer({
   onMove: (id: string, x: number, y: number) => void;
   onPathEnd: (id: string, x: number, y: number) => void;
   draggingRef: React.RefObject<string | null>;
+  /** a sticker whose entrance is being shown in the editor (n restarts it) */
+  playing?: { id: string; n: number } | null;
+  /** page sections: stickers keep to the text column at any width (unset on the card: plain %) */
+  wide?: boolean;
 }) {
+  // the sticker being previewed is mounted afresh (new key) with its entrance switched on
+  const playKey = (d: Decoration) => (playing?.id === d.id ? `${d.id}-${playing.n}` : d.id);
+  const playProps = (d: Decoration) => ({ wide, ...(playing?.id === d.id ? { enter: true, "data-play": "" } : {}) });
   const ref = useRef<HTMLDivElement>(null);
-  const sel = items.find((d) => d.id === selected);
+  const all = items;
+  // find each picture sticker's visible part now, so the very first press on it already knows its edges
+  const pics = items.filter((d) => d.kind === "image").map((d) => d.content).join("|");
+  useEffect(() => {
+    for (const src of pics.split("|")) if (src) alphaBoundsNow(new URL(src, window.location.href).href);
+  }, [pics]);
+  const sel = all.find((d) => d.id === selected);
+  // centre lines while a sticker is dragged: green once it sits on the section's centre (it snaps there within a few pixels)
+  const [guide, setGuide] = useState<{ x: boolean; y: boolean } | null>(null);
+  const stopDrag = () => {
+    draggingRef.current = null;
+    setGuide(null);
+  };
   function move(e: RPointerEvent) {
     const id = draggingRef.current;
     if (!id || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
-    const x = clamp(((e.clientX - r.left) / r.width) * 100);
-    const y = clamp(((e.clientY - r.top) / r.height) * 100);
+    // the same mapping the sticker is drawn with, backwards, so it stays under the pointer at any canvas width
+    let x = wide === undefined ? clamp(((e.clientX - r.left) / r.width) * 100) : decorXFromPx(e.clientX - r.left, r.width, wide);
+    let y = clamp(((e.clientY - r.top) / r.height) * 100);
+    const onX = Math.abs(x - 50) * r.width / 100 < 8;
+    const onY = Math.abs(y - 50) * r.height / 100 < 8;
+    if (onX) x = 50;
+    if (onY) y = 50;
+    if (!guide || guide.x !== onX || guide.y !== onY) setGuide({ x: onX, y: onY });
     if (id.startsWith("end:")) {
       const real = id.slice(4);
-      if (items.some((d) => d.id === real)) onPathEnd(real, x, y);
-    } else if (items.some((d) => d.id === id)) onMove(id, x, y);
+      if (all.some((d) => d.id === real)) onPathEnd(real, x, y);
+    } else if (all.some((d) => d.id === id)) onMove(id, x, y); // behind stickers too (they are not in the front list)
   }
 
   const handlesFor = (d: Decoration) => stickerHandles(d, onChange, onRemove);
@@ -2029,37 +2795,48 @@ function DragLayer({
   }
 
   // stickers set to "behind" sit under the section's elements, even while picked: the picture stays on the back layer and only its frame and handles are drawn in front
-  const behind = items.filter((d) => d.layer === "back");
-  items = items.filter((d) => d.layer !== "back");
+  const behind = all.filter((d) => d.layer === "back");
+  const front = all.filter((d) => d.layer !== "back");
   const pickedBehind = behind.find((d) => d.id === selected);
   const item = (d: Decoration) => {
     const grab = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!onDrawnPart(e)) return;
       e.currentTarget.setPointerCapture(e.pointerId);
       draggingRef.current = d.id;
       onSelect(d.id);
     };
-    return <DecorItem key={d.id} d={d} noPath selected={false} className="pointer-events-auto cursor-grab touch-none active:cursor-grabbing" onPointerDown={grab} />;
+    return <DecorItem key={playKey(d)} {...playProps(d)} d={d} noPath selected={false} className="pointer-events-auto cursor-grab touch-none active:cursor-grabbing" onPointerDown={grab} />;
   };
 
   return (
     <>
     {behind.length > 0 && (
-      <div className="pointer-events-none absolute inset-0 z-[6] touch-none overflow-hidden" onPointerMove={move} onPointerUp={() => (draggingRef.current = null)} onPointerCancel={() => (draggingRef.current = null)}>
-        {behind.map(item)}
+      <div data-behind className="pointer-events-none absolute inset-0 z-[6] touch-none overflow-hidden" onPointerMove={move} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
+        <div data-decor-band className="decor-band">{behind.map(item)}</div>
       </div>
     )}
     {pickedBehind && (
-      <div className="pointer-events-none absolute inset-0 z-20 touch-none overflow-hidden" onPointerMove={move} onPointerUp={() => (draggingRef.current = null)} onPointerCancel={() => (draggingRef.current = null)}>
-        <DecorItem d={pickedBehind} noPath ghost selected handles={handlesFor(pickedBehind)} className="pointer-events-auto cursor-grab touch-none active:cursor-grabbing" onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); draggingRef.current = pickedBehind.id; }} />
+      <div className="pointer-events-none absolute inset-0 z-20 touch-none overflow-hidden" onPointerMove={move} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
+        <div data-decor-band className="decor-band">
+          <DecorItem d={pickedBehind} wide={wide} noPath ghost selected handles={handlesFor(pickedBehind)} className="pointer-events-auto cursor-grab touch-none active:cursor-grabbing" onPointerDown={(e) => { if (!onDrawnPart(e)) return; e.currentTarget.setPointerCapture(e.pointerId); draggingRef.current = pickedBehind.id; }} />
+        </div>
       </div>
     )}
     <div
-      ref={ref}
       className="pointer-events-none absolute inset-0 z-20 touch-none overflow-hidden"
       onPointerMove={move}
-      onPointerUp={() => (draggingRef.current = null)}
-      onPointerCancel={() => (draggingRef.current = null)}
+      onPointerUp={stopDrag}
+      onPointerCancel={stopDrag}
     >
+      {/* stickers are placed in % of this band (the editor's section width at most), the same as on the live page */}
+      <div ref={ref} data-decor-band className="decor-band">
+      {guide && (
+        <>
+          <i aria-hidden className="pointer-events-none absolute inset-y-0 left-1/2 z-[40] w-0 border-l-2 border-dashed transition-colors" style={{ borderColor: guide.x ? "#22c55e" : "rgba(239,68,68,0.55)" }} />
+          <i aria-hidden className="pointer-events-none absolute inset-x-0 top-1/2 z-[40] h-0 border-t-2 border-dashed transition-colors" style={{ borderColor: guide.y ? "#22c55e" : "rgba(239,68,68,0.55)" }} />
+          {guide.x && guide.y && <i aria-hidden className="pointer-events-none absolute left-1/2 top-1/2 z-[40] h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#22c55e] ring-2 ring-white" />}
+        </>
+      )}
       {sel && curve && (
         <>
           <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
@@ -2079,25 +2856,48 @@ function DragLayer({
           </div>
         </>
       )}
-      {items.map((d) => {
+      {front.map((d) => {
         const grab = (e: React.PointerEvent<HTMLDivElement>) => {
+          if (!onDrawnPart(e)) return;
           e.currentTarget.setPointerCapture(e.pointerId);
           draggingRef.current = d.id;
           onSelect(d.id);
         };
         // with a path the sticker plays its motion live; a faint copy stays at the start spot so it can still be selected and dragged
         return d.path?.on ? (
-          <Fragment key={d.id}>
-            <DecorItem d={d} noPath selected={d.id === selected} handles={handlesFor(d)} className="pointer-events-auto cursor-grab touch-none opacity-40 active:cursor-grabbing" onPointerDown={grab} />
-            <DecorItem d={d} noDelay aria-hidden className="pointer-events-none" />
+          <Fragment key={playKey(d)}>
+            <DecorItem {...playProps(d)} d={d} noPath selected={d.id === selected} handles={handlesFor(d)} className="pointer-events-auto cursor-grab touch-none opacity-40 active:cursor-grabbing" onPointerDown={grab} />
+            <DecorItem d={d} wide={wide} noDelay aria-hidden className="pointer-events-none" />
           </Fragment>
         ) : (
-          <DecorItem key={d.id} d={d} noPath selected={d.id === selected} handles={handlesFor(d)} className="pointer-events-auto cursor-grab touch-none active:cursor-grabbing" onPointerDown={grab} />
+          <DecorItem key={playKey(d)} {...playProps(d)} d={d} noPath selected={d.id === selected} handles={handlesFor(d)} className="pointer-events-auto cursor-grab touch-none active:cursor-grabbing" onPointerDown={grab} />
         );
       })}
+      </div>
     </div>
     </>
   );
+}
+
+/** Is a press on the part of a picture sticker that shows (inside its frame), not on its see-through margins?
+ *  offsetX / offsetY are in the picture's own turned and stretched coordinates, so this holds at any angle. Drawings and text answer
+ *  only on their shapes already (globals.css), so they always pass. */
+function onDrawnPart(e: React.PointerEvent<HTMLElement>): boolean {
+  const t = e.target as HTMLElement;
+  if (t.tagName !== "IMG") return true;
+  const im = t as HTMLImageElement;
+  if (!im.naturalWidth) return true;
+  const w = im.offsetWidth, h = im.offsetHeight;
+  let pw = w, ph = h;
+  if (getComputedStyle(im).objectFit === "contain") {
+    const ar = im.naturalWidth / im.naturalHeight;
+    if (w / h > ar) pw = h * ar;
+    else ph = w / ar;
+  }
+  const ox = (w - pw) / 2, oy = (h - ph) / 2;
+  const b = (getComputedStyle(im).objectFit === "cover" ? null : alphaBoundsNow(im.currentSrc || im.src)) ?? { l: 0, t: 0, r: 0, b: 0 };
+  const x = e.nativeEvent.offsetX, y = e.nativeEvent.offsetY;
+  return x >= ox + b.l * pw - 3 && x <= ox + pw * (1 - b.r) + 3 && y >= oy + b.t * ph - 3 && y <= oy + ph * (1 - b.b) + 3;
 }
 
 const KIND_LABEL = { text: "Text", graffiti: "Graffiti", emoji: "Emoji", art: "Illustration", image: "Image" } as const;
@@ -2205,7 +3005,19 @@ function DecorTools({
 
 
 /** The sticker settings, shown inside the floating panel. */
-function StickerEditor({ cur, update, onPosition, inLayout = false }: { cur: Decoration; update: (patch: Partial<Decoration>) => void; /** switch between floating (fixed) and part of the layout */ onPosition: () => void; inLayout?: boolean }) {
+function StickerEditor({ cur, update, onPosition, inLayout = false, arrange, onPlayEnter, phone = false, onResetPhone }: {
+  /** the editor is in Phone mode: place, size and turn changes go to the phone layout */
+  phone?: boolean;
+  onResetPhone?: () => void;
+  /** show its entrance once in the editor */
+  onPlayEnter?: () => void;
+  cur: Decoration;
+  update: (patch: Partial<Decoration>) => void;
+  /** switch between floating (fixed) and part of the layout */ onPosition: () => void;
+  inLayout?: boolean;
+  /** stacking among the other stickers on the same layer: where it is now (1 = bottom) and how to move it */
+  arrange?: { at: number; of: number; move: (op: ArrangeOp) => void };
+}) {
   return (
     <div className="grid gap-4">
       <div className="grid gap-1.5">
@@ -2243,6 +3055,9 @@ function StickerEditor({ cur, update, onPosition, inLayout = false }: { cur: Dec
       </div>
       {(cur.kind === "text" || cur.kind === "graffiti") && <ColorField label="Colour" value={cur.color} onChange={(color) => update({ color })} />}
       <SwitchField label="Mirror (flip left ↔ right)" checked={cur.flip} onChange={(flip) => update({ flip })} />
+      {cur.kind === "image" && cur.content.startsWith("/api/img/") && (
+        <RemoveBackground src={cur.content} original={cur.original} onCut={(content, original) => update({ content, original })} onRestore={() => update({ content: cur.original, original: undefined })} />
+      )}
       {cur.kind === "image" && (
         <SelectField
           label="Shape"
@@ -2253,6 +3068,43 @@ function StickerEditor({ cur, update, onPosition, inLayout = false }: { cur: Dec
       )}
       <SliderField label="Opacity (%)" min={10} max={100} value={cur.opacity} onChange={(opacity) => update({ opacity })} />
       {!inLayout && <SelectField label="Layer (never moves other elements)" value={cur.layer ?? "front"} options={[["front", "In front of all elements"], ["back", "Behind all elements"]]} onChange={(layer) => update({ layer })} />}
+      {!inLayout && (
+        <div className="grid gap-2 rounded-xl border border-border p-3">
+          <SwitchField label="Hide on phones" checked={cur.showOn === "desktop"} onChange={(off) => update({ showOn: off ? "desktop" : "all" })} />
+          <SelectField label="Show on" value={cur.showOn ?? "all"} options={[["all", "Every screen"], ["desktop", "Large screens only"], ["phone", "Phones only"]]} onChange={(showOn) => update({ showOn })} />
+          {phone && <p className="text-xs text-soft">Phone mode: moving, resizing and turning it here changes phones only.</p>}
+          {phone && cur.m && onResetPhone && <Button variant="outline" size="xs" className="justify-self-start" onClick={onResetPhone}>Use the large-screen place &amp; size</Button>}
+        </div>
+      )}
+      {!inLayout && (
+        <div className="grid gap-3 rounded-xl border border-border p-3">
+          <SelectField label="Appear" value={cur.enter ?? "none"} options={ENTER_EFFECTS.map((k) => [k, ENTER_LABELS[k]] as const)} onChange={(enter) => {
+              update({ enter });
+              if (enter !== "none") setTimeout(() => onPlayEnter?.(), 0); // show the new entrance straight away
+            }} />
+          {cur.enter && cur.enter !== "none" && onPlayEnter && (
+            <Button size="xs" shape="pill" variant="outline" icon="play" className="justify-self-start" onClick={onPlayEnter}>Play it here</Button>
+          )}
+          {cur.enter && cur.enter !== "none" && (
+            <SliderField label={`Show after ${(cur.enterDelay ?? 0).toFixed(1)} s`} min={0} max={10} step={0.1} value={cur.enterDelay ?? 0} onChange={(enterDelay) => update({ enterDelay: Math.round(enterDelay * 10) / 10 })} onCommit={() => onPlayEnter?.()} />
+          )}
+          <p className="text-xs text-soft">On the site it plays once its section comes into view (on the card: when the card appears). In the editor, press Play it here.</p>
+        </div>
+      )}
+      {!inLayout && arrange && arrange.of > 1 && (
+        <div className="grid gap-1.5">
+          <p className="flex items-center justify-between text-sm font-medium">
+            Arrange <span className="text-xs font-normal text-soft">{arrange.at === arrange.of ? "On top" : arrange.at === 1 ? "At the bottom" : `${arrange.at} of ${arrange.of}`}</span>
+          </p>
+          <div className="grid grid-cols-4 gap-1.5">
+            <Button size="xs" variant="outline" icon="bring-to-front" disabled={arrange.at === arrange.of} onClick={() => arrange.move("front")}>Front</Button>
+            <Button size="xs" variant="outline" icon="arrow-up" disabled={arrange.at === arrange.of} onClick={() => arrange.move("forward")}>Up</Button>
+            <Button size="xs" variant="outline" icon="arrow-down" disabled={arrange.at === 1} onClick={() => arrange.move("backward")}>Down</Button>
+            <Button size="xs" variant="outline" icon="send-to-back" disabled={arrange.at === 1} onClick={() => arrange.move("back")}>Back</Button>
+          </div>
+          <p className="text-xs text-soft">Which sticker sits over which, among the stickers on this layer of the section.</p>
+        </div>
+      )}
 
       {!inLayout && (
       <div className="grid gap-3 rounded-xl border border-border p-3">
@@ -2283,7 +3135,9 @@ function StickerEditor({ cur, update, onPosition, inLayout = false }: { cur: Dec
 }
 
 /** A dashed line from a floating panel to the element it edits; it follows dragging, scrolling and resizing. */
-function Connector({ panel, selector }: { panel: string; selector: string }) {
+/** The blue line from a floating panel to what it edits. `selector` may list several targets, most precise first
+ *  (an element's fitted frame, then its row): the first one that is on the page and has a size is used, so the line touches the element itself. */
+function Connector({ panel, selector }: { panel: string; selector: string | string[] }) {
   const [geo, setGeo] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null);
 
   useEffect(() => {
@@ -2291,7 +3145,14 @@ function Connector({ panel, selector }: { panel: string; selector: string }) {
     let lastKey = "";
     const tick = () => {
       const p = document.querySelector(`[data-panel="${panel}"]`)?.getBoundingClientRect();
-      const t = document.querySelector(selector)?.getBoundingClientRect();
+      let t: DOMRect | undefined;
+      for (const q of Array.isArray(selector) ? selector : [selector]) {
+        const r = document.querySelector(q)?.getBoundingClientRect();
+        if (r && r.width > 0 && r.height > 0) {
+          t = r;
+          break;
+        }
+      }
       let next: { sx: number; sy: number; ex: number; ey: number } | null = null;
       if (p && t && t.width > 0 && t.bottom > 0 && t.top < window.innerHeight) {
         const targetIsLeft = t.left + t.width / 2 < p.left + p.width / 2;
@@ -2311,13 +3172,14 @@ function Connector({ panel, selector }: { panel: string; selector: string }) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [panel, selector]);
+  }, [panel, Array.isArray(selector) ? selector.join("|") : selector]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!geo) return null;
   const bend = Math.max(40, Math.abs(geo.ex - geo.sx) / 2);
   const dir = geo.ex < geo.sx ? -1 : 1;
+  // above the canvas (a picked section is raised to z-40, which hid the line inside it), under the floating panels (z-110)
   return (
-    <svg className="pointer-events-none fixed inset-0 z-[39] h-full w-full" aria-hidden>
+    <svg className="pointer-events-none fixed inset-0 z-[100] h-full w-full" aria-hidden>
       <path
         d={`M ${geo.sx} ${geo.sy} C ${geo.sx + dir * bend} ${geo.sy}, ${geo.ex - dir * bend} ${geo.ey}, ${geo.ex} ${geo.ey}`}
         fill="none"
@@ -2334,7 +3196,7 @@ function Connector({ panel, selector }: { panel: string; selector: string }) {
 
 const lastPanelPos: Record<string, { x: number; y: number }> = {}; // remembered per panel between openings
 // where each panel first opens (cascaded, so several open together do not sit exactly on top of each other)
-const PANEL_START: Record<string, { fromRight: number; y: number; left?: number }> = { element: { fromRight: 300, y: 90 }, sticker: { fromRight: 340, y: 130 }, stickers: { fromRight: 320, y: 200 }, rsvppart: { fromRight: 360, y: 150 } }; // clear of the element list + toolbox columns
+const PANEL_START: Record<string, { fromRight: number; y: number; left?: number }> = { element: { fromRight: 300, y: 90 }, sticker: { fromRight: 340, y: 130 }, stickers: { fromRight: 320, y: 200 }, rsvppart: { fromRight: 360, y: 150 }, phone: { fromRight: 0, y: 80, left: 24 }, group: { fromRight: 660, y: 90 } }; // clear of the element list + toolbox columns
 
 /** A small window that floats over the editor; drag it by its header. */
 function FloatingPanel({ panelId, title, onClose, onDone, closeHint = "Close", width = 340, children }: { panelId: string; title: string; onClose: () => void; onDone: () => void; closeHint?: string; width?: number; children: React.ReactNode }) {
@@ -2394,6 +3256,7 @@ function FloatingPanel({ panelId, title, onClose, onDone, closeHint = "Close", w
 
 /** toolbox icon colour per tool (full class names so Tailwind keeps them) */
 const TOOL_TONE: Record<string, string> = {
+  "Card box": "text-rose-600",
   heading: "text-indigo-600",
   text: "text-slate-600",
   badge: "text-amber-600",

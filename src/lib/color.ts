@@ -37,3 +37,6 @@ const forDarkPage = (hex: string) => {
 export const fitAccent = (hex: string, mode: "light" | "dark") => (mode === "dark" ? forDarkPage(forWhiteText(hex)) : forWhiteText(hex));
 /** contrast of white text on a colour (4.5 or more is comfortable) */
 export const whiteContrast = (hex: string) => contrast(hex, "#ffffff");
+
+/** one colour and the family of lighter and darker shades that go with it (lightest to darkest), shown as a row of circles */
+export const colorShades = (hex: string) => [hexMix(hex, 22, "#ffffff"), hexMix(hex, 55, "#ffffff"), hex, hexMix(hex, 72, "#000000"), hexMix(hex, 45, "#000000")];

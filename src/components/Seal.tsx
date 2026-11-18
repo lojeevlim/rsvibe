@@ -2,9 +2,9 @@ import { useId, type ReactNode } from "react";
 import { hexMix } from "@/lib/color";
 
 /** Emblems pressed into the wax seal. Each is drawn in a 24×24 box. */
-export const SEAL_IDS = ["heart", "star", "crown", "flag", "rocket", "leaf", "ring", "gift", "cap", "tree", "bolt", "flower", "anchor", "trophy", "initial"] as const;
+export const SEAL_IDS = ["heart", "star", "crown", "flag", "rocket", "leaf", "ring", "gift", "cap", "tree", "bolt", "flower", "anchor", "trophy", "cake", "balloon", "bell", "music", "paw", "moon", "sun", "diamond", "rings", "clover", "snowflake", "butterfly", "key", "cocktail", "initial"] as const;
 export type SealId = (typeof SEAL_IDS)[number];
-export const SEAL_LABELS: Record<SealId, string> = { heart: "Heart", star: "Star", crown: "Crown", flag: "Racing flag", rocket: "Rocket", leaf: "Leaf", ring: "Ring", gift: "Gift", cap: "Graduation", tree: "Tree", bolt: "Bolt", flower: "Flower", anchor: "Anchor", trophy: "Trophy", initial: "Monogram" };
+export const SEAL_LABELS: Record<SealId, string> = { heart: "Heart", star: "Star", crown: "Crown", flag: "Racing flag", rocket: "Rocket", leaf: "Leaf", ring: "Ring", gift: "Gift", cap: "Graduation", tree: "Tree", bolt: "Bolt", flower: "Flower", anchor: "Anchor", trophy: "Trophy", cake: "Cake", balloon: "Balloon", bell: "Bell", music: "Music", paw: "Paw", moon: "Moon", sun: "Sun", diamond: "Diamond", rings: "Two rings", clover: "Clover", snowflake: "Snowflake", butterfly: "Butterfly", key: "Key", cocktail: "Cocktail", initial: "Monogram" };
 export const asSealId = (v: string): SealId => ((SEAL_IDS as readonly string[]).includes(v) ? (v as SealId) : "heart");
 
 const EMBLEMS: Record<Exclude<SealId, "initial">, ReactNode> = {
@@ -32,6 +32,71 @@ const EMBLEMS: Record<Exclude<SealId, "initial">, ReactNode> = {
   ),
   anchor: <path d="M12 2.500a2.500 2.500 0 100 5 2.500 2.500 0 000-5zM11 7h2v11h-2zM8 10h8v2H8zM5 12H3c0 5 4 9 9 9s9-4 9-9h-2c0 4-3 7-7 7s-7-3-7-7z" />,
   trophy: <path d="M7 3h10v6c0 3-2 5-5 5s-5-2-5-5zM7 5H3c0 4 2 5 4 5zM17 5h4c0 4-2 5-4 5zM11 14h2v4h-2zM8 20h8v2H8z" />,
+  cake: <path d="M4 12h16v8H4zM3 20.500h18V22H3zM11 7h2v4h-2zM12 2c1.300 1.500 1.600 2.700 0 4-1.600-1.300-1.300-2.500 0-4z" />,
+  balloon: (
+    <>
+      <ellipse cx="12" cy="9" rx="6" ry="7" />
+      <path d="M10.800 15.600h2.400L12 17.400zM11.500 17.200h1V22h-1z" />
+    </>
+  ),
+  bell: <path d="M12 2a1.500 1.500 0 011.500 1.500v.6A6 6 0 0118 10v5l2 2v1H4v-1l2-2v-5a6 6 0 014.500-5.900v-.6A1.500 1.500 0 0112 2zM9.500 19.500h5a2.500 2.500 0 01-5 0z" />,
+  music: (
+    <>
+      <circle cx="7" cy="18" r="3" />
+      <circle cx="17" cy="16" r="3" />
+      <path d="M8.500 5L20 2.500V16h-1.800V7l-8 1.800V18H8.500z" />
+    </>
+  ),
+  paw: (
+    <>
+      <ellipse cx="12" cy="16" rx="5" ry="4.200" />
+      <circle cx="5.800" cy="10.500" r="2.200" />
+      <circle cx="9.800" cy="6.500" r="2.200" />
+      <circle cx="14.200" cy="6.500" r="2.200" />
+      <circle cx="18.200" cy="10.500" r="2.200" />
+    </>
+  ),
+  moon: <path d="M15 2.500A9.500 9.500 0 1021.500 15 7.500 7.500 0 0115 2.500z" />,
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4.500" />
+      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => <rect key={a} x="11" y="1" width="2" height="4" rx="1" transform={`rotate(${a} 12 12)`} />)}
+    </>
+  ),
+  diamond: <path d="M7 3h10l4 5-9 13L3 8z" />,
+  rings: (
+    <>
+      <path d="M9 6a6 6 0 100 12A6 6 0 009 6zm0 2a4 4 0 110 8 4 4 0 010-8z" fillRule="evenodd" />
+      <path d="M15 6a6 6 0 100 12 6 6 0 000-12zm0 2a4 4 0 110 8 4 4 0 010-8z" fillRule="evenodd" />
+    </>
+  ),
+  clover: (
+    <>
+      <circle cx="12" cy="7.200" r="3.600" />
+      <circle cx="16.800" cy="12" r="3.600" />
+      <circle cx="12" cy="16.200" r="3.600" />
+      <circle cx="7.200" cy="12" r="3.600" />
+      <circle cx="12" cy="12" r="2.600" />
+      <path d="M11.400 16h1.400l1.600 6H13z" />
+    </>
+  ),
+  snowflake: (
+    <>
+      {[0, 60, 120].map((a) => <rect key={a} x="11" y="2" width="2" height="20" rx="1" transform={`rotate(${a} 12 12)`} />)}
+      <circle cx="12" cy="12" r="2.400" />
+    </>
+  ),
+  butterfly: (
+    <>
+      <ellipse cx="7.500" cy="8.500" rx="4.500" ry="5" transform="rotate(-25 7.500 8.500)" />
+      <ellipse cx="16.500" cy="8.500" rx="4.500" ry="5" transform="rotate(25 16.500 8.500)" />
+      <ellipse cx="8.500" cy="16.500" rx="3.200" ry="3.600" transform="rotate(20 8.500 16.500)" />
+      <ellipse cx="15.500" cy="16.500" rx="3.200" ry="3.600" transform="rotate(-20 15.500 16.500)" />
+      <rect x="11.200" y="5" width="1.600" height="15" rx="0.800" />
+    </>
+  ),
+  key: <path d="M7 7a5 5 0 100 10A5 5 0 007 7zm0 3a2 2 0 110 4 2 2 0 010-4zM11.500 11H22v2h-2v3h-2v-3h-2v2h-2v-2h-2.500z" fillRule="evenodd" />,
+  cocktail: <path d="M5 3h14l-6 8v8h4v2H7v-2h4v-8z" />,
 };
 
 /** A single emblem as a plain icon, for pickers and small marks. */

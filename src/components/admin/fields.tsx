@@ -66,10 +66,10 @@ export function SwitchField({ label, checked, onChange }: { label: string; check
   return <Switch size="sm" label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} />;
 }
 
-export function SliderField({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (v: number) => void }) {
+export function SliderField({ label, value, min, max, step, onChange, onCommit }: { label: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void; /** the slider was let go */ onCommit?: () => void }) {
   return (
     <Field label={label}>
-      <Slider size="sm" showValue min={min} max={max} value={value} onChange={(e) => onChange(+e.target.value)} />
+      <Slider size="sm" showValue min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value)} onPointerUp={onCommit} onKeyUp={onCommit} />
     </Field>
   );
 }

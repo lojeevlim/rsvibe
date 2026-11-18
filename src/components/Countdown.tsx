@@ -58,12 +58,12 @@ export default function Countdown({ target, label, light, endHeading = "", fx = 
       {done && <SectionEffect kind={fx} />}
       {/* the label and tiles keep their space (hidden) once the message shows, so the block never changes height */}
       <div className={`relative z-10 col-start-1 row-start-1 ${showMessage ? "invisible" : ""}`} aria-hidden={showMessage || undefined}>
-      <div className="relative z-10 flex items-center justify-center gap-3 sm:gap-5">
+      <div className="relative z-10 flex items-center justify-center gap-3 @min-[40rem]/page:gap-5">
         <span aria-hidden className="h-px max-w-20 flex-1 bg-current opacity-40" />
-        <p className="text-sm font-extrabold uppercase tracking-[0.2em] sm:text-base sm:tracking-[0.3em] md:text-lg">{label}</p>
+        <p className="text-sm font-extrabold uppercase tracking-[0.2em] @min-[40rem]/page:text-base @min-[40rem]/page:tracking-[0.3em] @min-[48rem]/page:text-lg">{label}</p>
         <span aria-hidden className="h-px max-w-20 flex-1 bg-current opacity-40" />
       </div>
-      <div className="relative z-10 mx-auto mt-5 grid max-w-3xl grid-cols-4 gap-2 sm:mt-7 sm:gap-3 md:gap-5">
+      <div className="relative z-10 mx-auto mt-5 grid max-w-3xl grid-cols-4 gap-2 @min-[40rem]/page:mt-7 @min-[40rem]/page:gap-3 @min-[48rem]/page:gap-5">
         {items.map(([name, value]) => (
           <Stat
             key={name}
@@ -71,15 +71,15 @@ export default function Countdown({ target, label, light, endHeading = "", fx = 
             value={value}
             classNames={{
               root: `items-center justify-center rounded-2xl border-0 py-3 text-center shadow-none ring-1 ${light ? "bg-[color-mix(in_oklab,var(--on-bg,#fff)_15%,transparent)] ring-[color-mix(in_oklab,var(--on-bg,#fff)_25%,transparent)]" : "bg-line ring-line"}`,
-              value: `font-display text-3xl font-bold tabular-nums sm:text-4xl md:text-5xl ${light ? "text-[color:var(--on-bg,#fff)]" : "text-ink"}`,
-              label: `text-[10px] font-semibold uppercase tracking-wide sm:text-xs sm:tracking-wider ${light ? "text-[color:var(--on-bg,#fff)] opacity-85" : "text-soft"}`,
+              value: `font-display text-3xl font-bold tabular-nums @min-[40rem]/page:text-4xl @min-[48rem]/page:text-5xl ${light ? "text-[color:var(--on-bg,#fff)]" : "text-ink"}`,
+              label: `text-[10px] font-semibold uppercase tracking-wide @min-[40rem]/page:text-xs @min-[40rem]/page:tracking-wider ${light ? "text-[color:var(--on-bg,#fff)] opacity-85" : "text-soft"}`,
             }}
           />
         ))}
       </div>
       </div>
       {showMessage && (
-        <h2 className="relative z-10 col-start-1 row-start-1 flex items-center justify-center px-2 text-center font-display text-3xl font-extrabold sm:text-4xl md:text-5xl">{endHeading}</h2>
+        <h2 className="relative z-10 col-start-1 row-start-1 flex items-center justify-center px-2 text-center font-display text-3xl font-extrabold @min-[40rem]/page:text-4xl @min-[48rem]/page:text-5xl">{endHeading}</h2>
       )}
     </div>
   );
