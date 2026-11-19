@@ -23,7 +23,7 @@ function duration(seconds: number) {
 export default function MapBlock({ title, location, zoom, size, interactive, avatar = "" }: { title: string; location: string; zoom: string; size: keyof typeof MAP_HEIGHT; interactive: boolean; avatar?: string }) {
   const pos = parseLatLng(location);
   const [from, setFrom] = useState<[number, number] | null>(null);
-  const [summary, setSummary] = useState<(RouteSummary & { arrive: string }) | null>(null);
+  const [summary, setSummary] = useState<(RouteSummary & { arrive: string; delay?: number }) | null>(null);
   const [busy, setBusy] = useState(false);
   const [askOpen, setAskOpen] = useState(false); // our own "enable location" dialog
   const [blocked, setBlocked] = useState(false); // the browser refused (or had already blocked) location
@@ -110,9 +110,22 @@ export default function MapBlock({ title, location, zoom, size, interactive, ava
           avatar={avatar}
           from={interactive ? from : null}
           profile="driving"
-          onRoute={(r) => {
+          onRoute={async (r) => {
+            // live traffic (TomTom, via our server): adds what today's traffic costs; without it, the plain route time
+            let duration = r.duration;
+            let delay: number | undefined;
+            if (from) {
+              try {
+                const res = await fetch("/api/traffic", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [pos.lng, pos.lat] }) });
+                if (res.ok) {
+                  const t = await res.json();
+                  duration = t.duration;
+                  delay = t.delay;
+                }
+              } catch {}
+            }
             // the arrival time is worked out once, when the route arrives (as if leaving right now)
-            setSummary({ ...r, arrive: new Date(Date.now() + (r.duration ?? 0) * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) });
+            setSummary({ ...r, duration, delay, arrive: new Date(Date.now() + (duration ?? 0) * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) });
             setBusy(false);
           }}
           onRouteError={() => {
@@ -167,6 +180,11 @@ export default function MapBlock({ title, location, zoom, size, interactive, ava
                 Leave now and you&apos;ll arrive around{" "}
                 <b className="text-fg">{summary.arrive}</b>
               </p>
+              {summary.delay !== undefined && (
+                <p className={`text-xs font-semibold ${summary.delay >= 60 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                  {summary.delay >= 60 ? `Includes ~${duration(summary.delay)} of traffic right now` : "Traffic is light right now"}
+                </p>
+              )}
             </motion.div>
           )}
           {error && <Alert variant="error" closable onClose={() => setError("")}>{error}</Alert>}
