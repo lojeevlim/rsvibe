@@ -16,7 +16,7 @@ import SectionEffect from "@/components/SectionEffect";
 import Countdown from "@/components/Countdown";
 import Decorations, { DecorItem } from "@/components/Decorations";
 import { EditBlock, EditGroup, EditSection, type EditActions } from "@/components/edit-ui";
-import { blockPhoneAttrs, cardBackground, groupPhoneAttrs, sectionScales, CARD_SECTION, DEFAULT_BORDER, DEFAULT_PATH, MAX_DECORATIONS, pageSections, type Block, type Section, type Settings } from "@/lib/settings-shared";
+import { blockPhoneAttrs, cardBackground, groupPhoneAttrs, sectionScales, effectInFront, CARD_SECTION, DEFAULT_BORDER, DEFAULT_PATH, MAX_DECORATIONS, pageSections, type Block, type Section, type Settings } from "@/lib/settings-shared";
 
 export type EditProps = {
   selected: { section: string | null; block: string | null };
@@ -702,7 +702,7 @@ function SectionBody({ sec, edit, rsvpEndpoint, page, screens }: { sec: Section;
         } as React.CSSProperties
       }
     >
-      <SectionEffect kind={sec.effect} />
+      <SectionEffect kind={sec.effect} front={effectInFront(sec)} />
       <SectionBorder border={sec.border} id={sec.id} />
       <div className={`relative z-10 mx-auto w-full ${sec.wide ? "max-w-6xl" : "max-w-3xl"}`} style={{ ...(sec.panel === "none" ? {} : { filter: "drop-shadow(0 14px 22px rgba(0,0,0,0.16))" }), marginBottom: sec.grow || undefined }}>
       <div className={`group/sec relative flex flex-col items-center gap-4 text-center @min-[48rem]/page:gap-5 ${sec.panel === "none" ? "" : "px-6 py-10 @min-[40rem]/page:px-12 @min-[40rem]/page:py-14"}`} style={panelStyle(sec.panel, !!edit)} data-wide={sec.wide} data-sec-body>

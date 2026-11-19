@@ -13,6 +13,7 @@ import {
   KINDS,
   MAX_BLOCKS,
   EFFECT_LABELS,
+  effectInFront,
   MAX_DECORATIONS,
   MAX_IMAGES,
   MAX_SECTIONS,
@@ -2025,6 +2026,14 @@ function SectionEditor({ sec, set, remove }: { sec: Section; set: (p: Partial<Se
           options={EFFECT_LABELS}
           onChange={(effect) => set({ effect })}
         />
+        {sec.effect !== "none" && (
+          <SelectField
+            label="Effect position"
+            value={effectInFront(sec) ? "front" : "back"}
+            options={[["back", "Behind the elements"], ["front", "In front of the elements"]]}
+            onChange={(v) => set({ effectFront: v === "front" })}
+          />
+        )}
         <div className="grid gap-3 rounded-xl border border-border p-3">
           <SwitchField label="Gradient background" checked={sec.gradient.on} onChange={(on) => set({ gradient: { ...sec.gradient, on } })} />
           {sec.gradient.on ? (

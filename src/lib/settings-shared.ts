@@ -151,6 +151,9 @@ export function resolveRsvpParts(stored?: RsvpPart[]): RsvpPart[] {
   return out;
 }
 
+/** Is the section's effect drawn in front of its elements? Its own setting wins; confetti pops / falls in front by default, the rest stay behind */
+export const effectInFront = (sec: { effect: string; effectFront?: boolean }) => sec.effectFront ?? (sec.effect === "confetti" || sec.effect === "popper");
+
 /** Labels for the animated background effects (shared by sections and the countdown) */
 export const EFFECT_LABELS: [(typeof SECTION_EFFECTS)[number], string][] = [
   ["none", "None"],
@@ -303,6 +306,8 @@ const section = z.object({
   /** illustrated border on each side, and how big the artwork is */
   border: borderArt.default(DEFAULT_BORDER),
   effect: z.enum(SECTION_EFFECTS).default("none"),
+  /** draw the effect in front of the section's elements (unset: confetti in front, the rest behind; see effectInFront) */
+  effectFront: z.boolean().optional(),
   card: z.boolean(),
   wide: z.boolean(),
   pad: z.enum(["sm", "md", "lg"]),

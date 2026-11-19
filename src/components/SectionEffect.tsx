@@ -10,7 +10,7 @@ const spread = (i: number) => `${(i * 37 + 11) % 94}%`;
 const dur = (i: number, base: number, range: number) => `${base + ((i * 7) % range)}s`;
 const delay = (i: number, step: number) => `${-(i * step)}s`;
 
-export default function SectionEffect({ kind }: { kind: Section["effect"] }) {
+export default function SectionEffect({ kind, front }: { kind: Section["effect"]; /** over the section's elements (z-20) instead of behind them */ front?: boolean }) {
   if (kind === "none") return null;
 
   // balloons and graffiti are DOM elements; everything else is drawn on a canvas
@@ -34,7 +34,7 @@ export default function SectionEffect({ kind }: { kind: Section["effect"] }) {
     );
 
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden rounded-[inherit]">
+    <div aria-hidden className={`pointer-events-none absolute inset-0 ${front ? "z-20" : "z-0"} overflow-hidden rounded-[inherit]`}>
       {items}
     </div>
   );
