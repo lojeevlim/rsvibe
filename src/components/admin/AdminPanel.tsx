@@ -1070,7 +1070,7 @@ export default function AdminPanel({ initial, eventId, eventTitle, account }: { 
     <DragLayer
       items={canvas.decorations.filter((d) => d.section === id)}
       selected={selDecor}
-      onPathEnd={(did, x, y) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? { ...d, path: { ...d.path, x, y } } : d)) }))}
+      onPathEnd={(did, x, y) => setS((prev) => ({ ...prev, decorations: prev.decorations.map((d) => (d.id === did ? patchDecor(d, { path: { ...(phoneMode ? phoneDecor(d) : d).path, x, y } }) : d)) }))}
       onSelect={(did) => {
         setSelDecor(did);
         setSelKind("sticker");

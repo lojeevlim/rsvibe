@@ -396,7 +396,7 @@ export const settingsSchema = z.object({
         /** picture stickers: the upload as it was before its background was removed */
         original: upload.optional(),
         /** the phone layout: its own place, size and turn on phones (unset = as on large screens), and which screens show it */
-        m: z.object({ x: z.number().min(0).max(100), y: z.number().min(0).max(100), size: z.number().min(4).max(5000), rotate: z.number().min(-180).max(180) }).partial().optional(),
+        m: z.object({ x: z.number().min(0).max(100), y: z.number().min(0).max(100), size: z.number().min(4).max(5000), rotate: z.number().min(-180).max(180), /** where its path ends on phones */ path: z.object({ x: z.number().min(0).max(100), y: z.number().min(0).max(100) }) }).partial().optional(),
         showOn: z.enum(["all", "desktop", "phone"]).optional(),
       })
         .refine((d) => d.kind !== "image" || upload.safeParse(d.content).success, { path: ["content"], message: "An image sticker needs an uploaded picture" }),
@@ -482,9 +482,9 @@ export function decorXFromPx(px: number, band: number, wide: boolean): number {
 const PHONE_DECOR_KEYS = ["x", "y", "size", "rotate"] as const;
 const PHONE_BLOCK_KEYS = ["x", "y", "groupX", "groupY", "groupW", "groupH"] as const;
 
-/** a sticker as it sits on phones */
+/** a sticker as it sits on phones (its path's end too; the path's other settings are shared) */
 export function phoneDecor(d: Decoration): Decoration {
-  return d.m ? { ...d, ...d.m } : d;
+  return d.m ? { ...d, ...d.m, path: d.m.path ? { ...d.path, ...d.m.path } : d.path } : d;
 }
 /** an element as it sits on phones */
 export function phoneBlock(b: Block): Block {
@@ -497,13 +497,23 @@ export function phoneBlock(b: Block): Block {
 export function phoneSettings(s: Settings): Settings {
   return { ...s, decorations: s.decorations.map(phoneDecor), sections: s.sections.map((sec) => ({ ...sec, blocks: sec.blocks.map(phoneBlock) })) };
 }
-/** a change to a sticker made in Phone mode: its place, size and turn go to the phone layout, everything else to the sticker itself */
+/** a change to a sticker made in Phone mode: its place, size, turn and path end go to the phone layout, everything else to the sticker itself */
 export function splitDecorPatch(d: Decoration, patch: Partial<Decoration>): Partial<Decoration> {
   const out: Partial<Decoration> = {};
   const m = { ...(d.m ?? {}) };
   let phone = false;
   for (const [k, v] of Object.entries(patch)) {
-    if ((PHONE_DECOR_KEYS as readonly string[]).includes(k)) {
+    if (k === "path" && v) {
+      const p = v as Decoration["path"];
+      const now = phoneDecor(d).path;
+      if (p.x !== now.x || p.y !== now.y) {
+        m.path = { x: p.x, y: p.y };
+        phone = true;
+      }
+      // curve, timing and on / off are shared; the large-screen end stays its own (it takes this end only when the path is first turned on)
+      const first = p.on && !d.path.on;
+      out.path = { ...p, x: first ? p.x : d.path.x, y: first ? p.y : d.path.y };
+    } else if ((PHONE_DECOR_KEYS as readonly string[]).includes(k)) {
       (m as Record<string, unknown>)[k] = v;
       phone = true;
     } else (out as Record<string, unknown>)[k] = v;

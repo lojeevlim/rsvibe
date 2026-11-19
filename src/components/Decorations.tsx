@@ -52,7 +52,7 @@ export function DecorItem({ d, wide, enter, selected, handles, noPath, noDelay, 
       "}";
     frames = keyframes(name, pts);
     // its own phone place: on phones it travels from there instead (globals.css swaps --path-anim)
-    if (d.m?.x !== undefined || d.m?.y !== undefined) {
+    if (d.m?.x !== undefined || d.m?.y !== undefined || d.m?.path) {
       frames += keyframes(`${name}-m`, decorPath(phoneDecor(d)));
       pathVars = { "--path-anim": name, "--m-path-anim": `${name}-m` };
     } else pathVars = { "--path-anim": name };
@@ -65,6 +65,7 @@ export function DecorItem({ d, wide, enter, selected, handles, noPath, noDelay, 
     <div
       {...rest}
       {...phone.attrs}
+      data-m-path={pathVars["--m-path-anim"] ? "" : undefined}
       data-decor={d.id}
       data-enter={enter && d.enter && d.enter !== "none" ? d.enter : undefined}
       className={`decor decor-${d.kind} fx-${d.effect} ${pts ? "decor-moves" : ""} ${selected && !handles ? "outline-2 outline-dashed outline-offset-4 outline-brand" : ""} ${className}`}
