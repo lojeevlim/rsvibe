@@ -74,17 +74,26 @@ function Choice({ active, onClick, icon, title, hint }: { active: boolean; onCli
 export default function RsvpForm({ title, subtitle, labels = {}, parts: partsProp, endpoint }: { title: string; subtitle: string; labels?: Record<string, string>; parts?: RsvpPart[]; /** where the reply is sent (the public event page sets it) */ endpoint?: string }) {
   /** the text for a key: what the editor set, else the default */
   const L = (key: string) => labels[key]?.trim() || RSVP_DEFAULTS[key];
-  const [attending, setAttending] = useState(true);
-  const [adults, setAdults] = useState(2);
+  /** null = not answered yet (nothing picked at first) */
+  const [picked, setPicked] = useState<boolean | null>(null);
+  const [adults, setAdults] = useState(1);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [kids, setKids] = useState(0);
   const [noteLength, setNoteLength] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<Result>(null);
   const total = adults + kids;
+  const parts = resolveRsvpParts(partsProp);
+  // the host may hide "Will you attend?": then every reply is a yes, as before
+  const askAttend = parts.some((p) => p.key === "attend" && !p.hidden);
+  const attending = askAttend ? picked === true : true;
+  const ready = name.trim() !== "" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) && (!askAttend || picked !== null);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!ready) return;
     const f = new FormData(e.currentTarget);
     const guests = attending ? Math.min(10, Math.max(1, total)) : 1;
     setLoading(true);
@@ -146,27 +155,25 @@ export default function RsvpForm({ title, subtitle, labels = {}, parts: partsPro
     );
   }
 
-  const parts = resolveRsvpParts(partsProp);
-
   const content: Record<RsvpPartKey, (p: RsvpPart) => React.ReactNode> = {
     name: () => (
       <div className="grid gap-2">
         <Label htmlFor="name" required className={eyebrow}>{L("nameLabel")}</Label>
-        <Input id="name" name="name" variant="filled" size="lg" leadingIcon="user" placeholder={L("namePlaceholder")} required maxLength={80} autoComplete="name" />
+        <Input id="name" name="name" variant="filled" size="lg" leadingIcon="user" placeholder={L("namePlaceholder")} required maxLength={80} autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
       </div>
     ),
     email: () => (
       <div className="grid gap-2">
         <Label htmlFor="email" required className={eyebrow}>{L("emailLabel")}</Label>
-        <Input id="email" name="email" type="email" variant="filled" size="lg" leadingIcon="mail" placeholder={L("emailPlaceholder")} required autoComplete="email" />
+        <Input id="email" name="email" type="email" variant="filled" size="lg" leadingIcon="mail" placeholder={L("emailPlaceholder")} required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       </div>
     ),
     attend: () => (
       <div className="grid gap-3">
         <span className={eyebrow}>{L("attendLabel")}</span>
         <div className="grid gap-3 @min-[40rem]/page:grid-cols-2" role="group" aria-label={L("attendLabel")}>
-          <Choice active={attending} onClick={() => setAttending(true)} icon={<Check size={20} />} title={L("yesTitle")} hint={L("yesHint")} />
-          <Choice active={!attending} onClick={() => setAttending(false)} icon={<X size={20} />} title={L("noTitle")} hint={L("noHint")} />
+          <Choice active={picked === true} onClick={() => setPicked(true)} icon={<Check size={20} />} title={L("yesTitle")} hint={L("yesHint")} />
+          <Choice active={picked === false} onClick={() => setPicked(false)} icon={<X size={20} />} title={L("noTitle")} hint={L("noHint")} />
         </div>
       </div>
     ),
@@ -209,8 +216,8 @@ export default function RsvpForm({ title, subtitle, labels = {}, parts: partsPro
       </div>
     ),
     submit: (p) => (
-      <Button type="submit" size="lg" shape="pill" loading={loading} className={`font-semibold ${p.width === "fit" ? "" : "w-full"}`}>
-        {loading ? L("sending") : (<>{attending ? L("submitYes") : L("submitNo")} <ArrowRight size={17} className="ml-1" /></>)}
+      <Button type="submit" size="lg" shape="pill" loading={loading} disabled={!ready} className={`font-semibold ${p.width === "fit" ? "" : "w-full"}`}>
+        {loading ? L("sending") : (<>{picked === false && askAttend ? L("submitNo") : L("submitYes")} <ArrowRight size={17} className="ml-1" /></>)}
       </Button>
     ),
     privacy: (p) => (
