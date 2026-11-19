@@ -99,6 +99,12 @@ h1, h2, h3, .font-display {
   [data-show="desktop"]:not(.editing *) { display: none !important; }
   .editing [data-show="desktop"] { opacity: 0.35; outline: 2px dashed #94a3b8; outline-offset: 2px; }
 }
+/* phones with reduced motion: a path sticker's path does not play (see .decor-moves), so it rests at its phone place like any other sticker */
+@media (prefers-reduced-motion: reduce) {
+  @container screen (width < 48rem) {
+    .decor-moves[data-m-pos]:not(.fit-inner *) { left: var(--m-x) !important; top: var(--m-y) !important; }
+  }
+}
 @container screen (width >= 48rem) {
   [data-show="phone"]:not(.editing *) { display: none !important; }
   .editing [data-show="phone"] { opacity: 0.35; outline: 2px dashed #94a3b8; outline-offset: 2px; }
