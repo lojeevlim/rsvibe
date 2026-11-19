@@ -1,6 +1,7 @@
 import ScrollIn, { type ScrollInKind } from "@/components/ScrollIn";
 import EnvelopeIntro, { type CardPart } from "@/components/EnvelopeIntro";
 import TapCard from "@/components/TapCard";
+import FitZoom from "@/components/FitZoom";
 import CurvedText from "@/components/CurvedText";
 import ScreensMode from "@/components/ScreensMode";
 import SectionBorder from "@/components/BorderArt";
@@ -824,6 +825,7 @@ export default function PageView({ s, edit, card, rsvpEndpoint, introTop }: {
           return (
             <div key={sec.id} data-section={sec.id} data-show={sec.showOn && sec.showOn !== "all" ? sec.showOn : undefined} className="decor-host relative">
               <div className="fit-inner pointer-events-none relative">
+                <FitZoom />
                 <SectionBody sec={dsec} page={s.page} screens={false} />
                 <Decorations items={big.decorations.filter((d) => d.section === sec.id)} wide={dsec.wide} />
               </div>
@@ -843,6 +845,7 @@ export default function PageView({ s, edit, card, rsvpEndpoint, introTop }: {
             {sectionScales(sec, s.page) ? (
               // laid out at the editor's width, then shrunk to fit the screen (see .fit-inner)
               <div className="fit-inner relative">
+                <FitZoom />
                 {body}
                 <Decorations items={s.decorations.filter((d) => d.section === sec.id)} wide={sec.wide} />
               </div>
