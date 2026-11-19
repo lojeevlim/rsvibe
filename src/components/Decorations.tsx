@@ -1,5 +1,5 @@
 import type { CSSProperties, HTMLAttributes } from "react";
-import { decorLeft, decorPath, decorPhoneAttrs, type Decoration } from "@/lib/settings-shared";
+import { decorLeft, decorPath, decorPhoneAttrs, phoneDecor, type Decoration } from "@/lib/settings-shared";
 import ArtSvg from "@/components/ArtSvg";
 import EnterWatch from "@/components/EnterWatch";
 import FitFrame from "@/components/FitFrame";
@@ -32,6 +32,7 @@ export function DecorItem({ d, wide, enter, selected, handles, noPath, noDelay, 
   const pts = d.path?.on && !noPath ? decorPath(d) : null;
   let frames = "";
   let animation: string | undefined;
+  let pathVars: Record<string, string> = {};
   if (pts) {
     const pause = noDelay ? 0 : d.path.delay;
     const total = d.path.duration + pause;
@@ -39,17 +40,23 @@ export function DecorItem({ d, wide, enter, selected, handles, noPath, noDelay, 
     const at = (pct: number, [x, y]: [number, number], op?: number) =>
       `${pct.toFixed(2)}%{left:${x.toFixed(2)}%;top:${y.toFixed(2)}%${op === undefined ? "" : `;opacity:${op}`}}`;
     const name = `dpath-${d.id.replace(/[^a-z0-9]/gi, "")}`;
-    frames =
-      `@keyframes ${name}{` +
-      at(0, pts[0], 0) +
+    const keyframes = (n: string, p: [number, number][]) =>
+      `@keyframes ${n}{` +
+      at(0, p[0], 0) +
       `${(f * 0.08).toFixed(2)}%{opacity:1}` +
-      at(f * 0.25, pts[1]) +
-      at(f * 0.5, pts[2]) +
-      at(f * 0.75, pts[3], 1) +
-      at(f, pts[4], 0) +
-      at(100, pts[4], 0) +
+      at(f * 0.25, p[1]) +
+      at(f * 0.5, p[2]) +
+      at(f * 0.75, p[3], 1) +
+      at(f, p[4], 0) +
+      at(100, p[4], 0) +
       "}";
-    animation = `${name} ${total}s linear infinite`;
+    frames = keyframes(name, pts);
+    // its own phone place: on phones it travels from there instead (globals.css swaps --path-anim)
+    if (d.m?.x !== undefined || d.m?.y !== undefined) {
+      frames += keyframes(`${name}-m`, decorPath(phoneDecor(d)));
+      pathVars = { "--path-anim": name, "--m-path-anim": `${name}-m` };
+    } else pathVars = { "--path-anim": name };
+    animation = `var(--path-anim) ${total}s linear infinite`;
   }
   const phone = decorPhoneAttrs(d); // its own place / size / turn on phones, and which screens show it
   // its phone x is placed the same way as its large-screen x (beside / over the text column), so dragging keeps it under the pointer
@@ -61,7 +68,7 @@ export function DecorItem({ d, wide, enter, selected, handles, noPath, noDelay, 
       data-decor={d.id}
       data-enter={enter && d.enter && d.enter !== "none" ? d.enter : undefined}
       className={`decor decor-${d.kind} fx-${d.effect} ${pts ? "decor-moves" : ""} ${selected && !handles ? "outline-2 outline-dashed outline-offset-4 outline-brand" : ""} ${className}`}
-      style={{ left: wide === undefined ? `${d.x}%` : decorLeft(d.x, wide), top: `${d.y}%`, color: d.color, "--s": d.size, "--r": `${d.rotate}deg`, "--sx": d.sx ?? 1, "--sy": d.sy ?? 1, "--enter-delay": `${d.enterDelay ?? 0}s`, ...phone.vars, ...(animation ? { animation: enter && d.enter && d.enter !== "none" ? `var(--enter-anim) var(--enter-delay) both, ${animation}` : animation } : {}), ...style } as CSSProperties}
+      style={{ left: wide === undefined ? `${d.x}%` : decorLeft(d.x, wide), top: `${d.y}%`, color: d.color, "--s": d.size, "--r": `${d.rotate}deg`, "--sx": d.sx ?? 1, "--sy": d.sy ?? 1, "--enter-delay": `${d.enterDelay ?? 0}s`, ...phone.vars, ...pathVars, ...(animation ? { animation: enter && d.enter && d.enter !== "none" ? `var(--enter-anim) var(--enter-delay) both, ${animation}` : animation } : {}), ...style } as CSSProperties}
     >
       {frames && <style>{frames}</style>}
       <span>

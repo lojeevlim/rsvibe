@@ -84,7 +84,9 @@ h1, h2, h3, .font-display {
    and "show on" hides what is for the other kind of screen. !important: it wins over the large-screen values written on the element. ---- */
 @container screen (width < 48rem) {
   /* the phone places and sizes: not inside a section that scales the large-screen design (it shows that design as it is) */
-  .decor[data-m-pos]:not(.fit-inner *) { left: var(--m-x) !important; top: var(--m-y) !important; }
+  .decor[data-m-pos]:not(.fit-inner *):not(.decor-moves) { left: var(--m-x) !important; top: var(--m-y) !important; }
+  /* a sticker moving along a path: its left / top come from the animation (an !important left / top would freeze it), so it plays its phone path instead */
+  .decor-moves[data-m-pos]:not(.fit-inner *) { --path-anim: var(--m-path-anim) !important; }
   .decor[data-m-size]:not(.fit-inner *) { --s: var(--m-s) !important; }
   .decor[data-m-rot]:not(.fit-inner *) { --r: var(--m-r) !important; }
   [data-m-bpos]:not(.fit-inner *) { left: var(--m-bx) !important; margin-top: var(--m-by) !important; }
